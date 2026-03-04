@@ -8,11 +8,15 @@ import { Button } from "@/components/ui/button";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
+import { useStreamingDisplay } from "@/hooks/useStreamingDisplay";
+import { McpAppFrame } from "./McpAppFrame";
+import type { McpApp } from "@/lib/threads";
 
 interface Message {
   role: string;
   content: string;
   thought?: string;
+  apps?: McpApp[];
 }
 
 interface ChatMessagesProps {
@@ -26,6 +30,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
   const bottomRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const displayedContent = useStreamingDisplay(streamingContent ?? null);
 
   useEffect(() => {
     const el = bottomRef.current;
@@ -44,9 +49,9 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
     if (!isAtBottom || !bottomRef.current) return;
     const el = bottomRef.current;
     const now = Date.now();
-    if ((streamingContent != null || streamingThought != null) && now - scrollThrottleRef.current < 200) return;
+    if ((streamingContent != null || streamingThought != null) && now - scrollThrottleRef.current < 60) return;
     scrollThrottleRef.current = now;
-    el.scrollIntoView({ behavior: "auto", block: "end" });
+    el.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, streamingContent, isAtBottom]);
 
   if (messages.length === 0 && !streamingContent && !streamingThought) {
@@ -100,6 +105,16 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
                   <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-3 prose-li:my-1 prose-headings:mt-6 prose-headings:mb-3 prose-th:px-4 prose-th:py-2 prose-td:px-4 prose-td:py-2">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                   </div>
+                  {msg.apps?.map((app, j) => (
+                    <div key={j} className="mt-4">
+                      <McpAppFrame
+                        resourceUri={app.resourceUri}
+                        toolName={app.toolName}
+                        result={app.result}
+                        serverId={app.serverId}
+                      />
+                    </div>
+                  ))}
                 </>
               ) : (
                 <p className="whitespace-pre-wrap">{msg.content}</p>
@@ -124,13 +139,13 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
                 </details>
               )}
               <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-3 prose-li:my-1 prose-headings:mt-6 prose-headings:mb-3 prose-th:px-4 prose-th:py-2 prose-td:px-4 prose-td:py-2">
-                {streamingContent ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingContent}</ReactMarkdown>
+                {streamingContent != null ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayedContent}</ReactMarkdown>
                 ) : (
                   <span className="animate-pulse">...</span>
                 )}
               </div>
-              {streamingContent && (
+              {streamingContent != null && (
                 <span className="ml-0.5 inline-block h-4 w-px animate-pulse bg-foreground" aria-hidden />
               )}
             </div>

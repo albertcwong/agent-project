@@ -11,7 +11,7 @@ MCP_CONNECT_TIMEOUT = 15.0
 from pydantic import BaseModel
 
 from agent.loop import run_agent_loop, run_agent_loop_stream
-from agent.mcp_client import list_tools
+from agent.mcp_client import call_tool, list_tools, read_resource
 from agent.prompts import TABLEAU_AGENT_SYSTEM_PROMPT
 from agent.tools import get_servers_config, get_servers_for_api
 
@@ -76,6 +76,8 @@ async def _stream_agent(req: AskRequest):
                 yield _chunk_line("thought", data)
             elif kind == "text":
                 yield _chunk_line("text", data)
+            elif kind == "app":
+                yield json.dumps({"type": "app", "app": data}) + "\n"
             elif kind == "done":
                 yield json.dumps({"type": "done", "meta": data}) + "\n"
     except Exception as e:
@@ -123,6 +125,52 @@ def get_servers():
 class ConnectRequest(BaseModel):
     serverId: str
     token: str | None = None
+
+
+class ToolCallRequest(BaseModel):
+    serverId: str
+    token: str | None = None
+    toolName: str
+    arguments: dict = {}
+
+
+@mcp_router.post("/tools/call")
+async def mcp_tools_call(req: ToolCallRequest):
+    """Proxy tool calls from MCP Apps (e.g. iframe) to the MCP server."""
+    servers = get_servers_config()
+    cfg = next((s for s in servers if s.get("id") == req.serverId), None)
+    if not cfg or not cfg.get("url"):
+        raise HTTPException(status_code=404, detail="Server not found")
+    auth = req.token or cfg.get("token")
+    try:
+        result = await call_tool(
+            url=cfg["url"], name=req.toolName, arguments=req.arguments, token=auth
+        )
+        return {"content": [{"type": "text", "text": result}]}
+    except Exception as e:
+        logger.warning("MCP tools/call failed for %s: %s", req.toolName, e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@mcp_router.get("/ui")
+async def get_ui_resource(uri: str = "", serverId: str = "", token: str | None = None):
+    """Fetch a ui:// resource from an MCP server. Proxies resources/read."""
+    if not uri or not uri.startswith("ui://"):
+        raise HTTPException(status_code=400, detail="Invalid or missing uri (must be ui://...)")
+    servers = get_servers_config()
+    cfg = next((s for s in servers if s.get("id") == serverId), None)
+    if not cfg or not cfg.get("url"):
+        raise HTTPException(status_code=404, detail="Server not found")
+    auth = token or cfg.get("token")
+    try:
+        content, mime = await read_resource(
+            url=cfg["url"], uri=uri, token=auth
+        )
+        from fastapi.responses import Response
+        return Response(content=content, media_type=mime)
+    except Exception as e:
+        logger.warning("MCP read_resource failed for %s: %s", uri, e)
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @mcp_router.post("/connect")

@@ -33,16 +33,28 @@ def _mcp_to_openai_tool(mcp_tool: dict) -> dict:
     }
 
 
-def mcp_tools_to_openai(mcp_tools: list[dict], filter_names: set[str] | None = None) -> list[dict]:
-    """Convert MCP tool list to OpenAI FunctionTool format. Optionally filter by name."""
+def _get_ui_resource_uri(mcp_tool: dict) -> str | None:
+    """Extract ui:// resourceUri from tool meta. Supports meta.ui.resourceUri and meta['ui/resourceUri']."""
+    meta = mcp_tool.get("meta") or mcp_tool.get("_meta") or {}
+    ui = meta.get("ui") if isinstance(meta.get("ui"), dict) else None
+    if ui and isinstance(ui.get("resourceUri"), str):
+        return ui["resourceUri"]
+    uri = meta.get("ui/resourceUri")
+    return uri if isinstance(uri, str) and uri.startswith("ui://") else None
+
+
+def mcp_tools_to_openai(mcp_tools: list[dict], filter_names: set[str] | None = None) -> tuple[list[dict], dict[str, str]]:
+    """Convert MCP tool list to OpenAI format. Returns (tools, tool_ui_map) where tool_ui_map is {name: resourceUri}."""
     filter_names = filter_names or set()
-    out = []
+    out, ui_map = [], {}
     for t in mcp_tools:
         name = t.get("name", "")
         if filter_names and name not in filter_names:
             continue
         out.append(_mcp_to_openai_tool(t))
-    return out
+        if uri := _get_ui_resource_uri(t):
+            ui_map[name] = uri
+    return out, ui_map
 
 
 def get_servers_config() -> list[dict]:
@@ -56,12 +68,13 @@ def get_servers_config() -> list[dict]:
 
 
 def get_servers_for_api() -> list[dict]:
-    """Servers config for API response (excludes token). Adds oauthBaseUrl from url origin."""
+    """Servers config for API response (excludes token). Adds oauthBaseUrl only when OAuth is enabled."""
     out = []
     for s in get_servers_config():
         cfg = {k: v for k, v in s.items() if k != "token"}
         url = cfg.get("url")
-        if url:
+        # Skip oauthBaseUrl for PAT-only servers (oauthEnabled: false or authType: "pat")
+        if url and cfg.get("oauthEnabled", True) and cfg.get("authType") != "pat":
             try:
                 from urllib.parse import urlparse
                 cfg["oauthBaseUrl"] = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
@@ -71,26 +84,39 @@ def get_servers_for_api() -> list[dict]:
     return out
 
 
-async def get_tools_for_servers(server_configs: list[dict]) -> list[dict]:
-    """Fetch tools from multiple MCP servers and merge into OpenAI format. Dedupes by name."""
+async def get_tools_for_servers(
+    server_configs: list[dict],
+    pool: dict | None = None,
+) -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
+    """Fetch tools from multiple MCP servers. Returns (tools, tool_ui_map, tool_server_map).
+    If pool is provided (from mcp_session_pool), use it to avoid new connections."""
     seen = set()
     tools = []
+    tool_ui_map: dict[str, dict] = {}
+    tool_server_map: dict[str, dict] = {}
     for cfg in server_configs:
         url = cfg.get("url")
-        token = cfg.get("token")
+        server_id = cfg.get("id", url or "")
         if not url:
             continue
         try:
-            mcp_tools = await list_tools(url=url, token=token)
-            for t in mcp_tools_to_openai(mcp_tools, filter_names=REQUIRED_TOOLS):
+            if pool:
+                mcp_tools = await pool["list_tools"](server_id)
+            else:
+                mcp_tools = await list_tools(url=url, token=cfg.get("token"))
+            oai_tools, ui_map = mcp_tools_to_openai(mcp_tools, filter_names=REQUIRED_TOOLS)
+            for t in oai_tools:
                 name = t["function"]["name"]
                 if name not in seen:
                     seen.add(name)
                     tools.append(t)
+                    tool_server_map[name] = cfg
+                    if name in ui_map:
+                        tool_ui_map[name] = {"resourceUri": ui_map[name], "serverId": server_id}
         except Exception as e:
             err_str = str(e).lower()
             if "401" in err_str or "unauthorized" in err_str:
                 logger.warning("MCP auth failed for %s (token missing or expired): %s", url, e)
             else:
                 logger.warning("Failed to list tools from %s: %s", url, e)
-    return tools
+    return tools, tool_ui_map, tool_server_map

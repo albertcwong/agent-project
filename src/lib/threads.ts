@@ -1,7 +1,15 @@
+export interface McpApp {
+  resourceUri: string;
+  toolName: string;
+  result: string;
+  serverId: string;
+}
+
 export interface ChatMessage {
   role: string;
   content: string;
   thought?: string;
+  apps?: McpApp[];
 }
 
 export interface Thread {

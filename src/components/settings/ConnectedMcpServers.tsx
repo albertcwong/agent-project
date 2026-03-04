@@ -6,6 +6,7 @@ import {
   getConnectedMcpServers,
   setConnectedMcpServers,
   getMcpServerToken,
+  setMcpServerToken,
   removeMcpServerToken,
 } from "@/lib/threads";
 
@@ -66,15 +67,24 @@ export function ConnectedMcpServers() {
     }
     setLoading((l) => ({ ...l, [id]: true }));
     setError((e) => ({ ...e, [id]: "" }));
+    let token = getMcpServerToken(id);
     try {
-      const token = getMcpServerToken(id);
       const res = await fetch("/api/mcp/connect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ serverId: id, token: token || undefined }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Connection failed");
+      if (!res.ok) {
+        if (res.status === 401 && !token) {
+          const pat = window.prompt("Enter your Personal Access Token (PAT):");
+          if (pat != null && pat.trim()) {
+            setMcpServerToken(id, pat.trim());
+            return handleConnect(id, server);
+          }
+        }
+        throw new Error(data.error || "Connection failed");
+      }
       setConnected((c) => {
         const next = new Set([...c, id]);
         setConnectedMcpServers([...next]);

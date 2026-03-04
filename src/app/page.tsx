@@ -107,6 +107,7 @@ function ChatPageContent() {
           let buffer = "";
           let thoughtAcc = "";
           let textAcc = "";
+          const appAcc: Array<{ resourceUri: string; toolName: string; result: string; serverId: string }> = [];
           const flush = () => {
             rafId = null;
             setStreamingThought(thoughtAcc || null);
@@ -126,6 +127,7 @@ function ChatPageContent() {
                     const obj = JSON.parse(line);
                     if (obj.type === "thought") thoughtAcc += (thoughtAcc ? "\n\n" : "") + (obj.content ?? "");
                     else if (obj.type === "text") textAcc += obj.content ?? "";
+                    else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
                     else if (obj.type === "done") { /* meta available if needed */ }
                   } catch {
                     // skip malformed lines
@@ -138,6 +140,7 @@ function ChatPageContent() {
                   const obj = JSON.parse(line);
                   if (obj.type === "thought") thoughtAcc += obj.content ?? "";
                   else if (obj.type === "text") textAcc += obj.content ?? "";
+                  else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
                 } catch { /* skip */ }
               }
             }
@@ -151,6 +154,7 @@ function ChatPageContent() {
             role: "assistant",
             content: textAcc.trim(),
             ...(thoughtAcc.trim() ? { thought: thoughtAcc.trim() } : {}),
+            ...(appAcc.length ? { apps: appAcc } : {}),
           }]);
         } else {
           const data = await res.json().catch(() => ({}));
