@@ -119,4 +119,8 @@ async def get_tools_for_servers(
                 logger.warning("MCP auth failed for %s (token missing or expired): %s", url, e)
             else:
                 logger.warning("Failed to list tools from %s: %s", url, e)
+    if tool_ui_map:
+        logger.info("MCP Apps enabled for tools: %s", list(tool_ui_map))
+    else:
+        logger.info("No MCP Apps (resourceUri) in tool definitions; charts will not render")
     return tools, tool_ui_map, tool_server_map

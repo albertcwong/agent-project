@@ -21,9 +21,19 @@ export function McpAppFrame({ resourceUri, toolName, result, serverId }: McpAppF
     const params = new URLSearchParams({ uri: resourceUri, serverId });
     if (token) params.set("token", token);
     fetch(`/api/mcp/ui?${params}`)
-      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(r.statusText))))
+      .then(async (r) => {
+        if (r.ok) return r.text();
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.error || body.detail || r.statusText);
+      })
       .then(setHtml)
-      .catch((e) => setError(e.message));
+      .catch((e) =>
+        setError(
+          e.message === "Failed to fetch"
+            ? "Network error: could not reach the agent. Check that the agent is running and AGENT_API_URL is correct."
+            : e.message
+        )
+      );
   }, [resourceUri, serverId]);
 
   useEffect(() => {

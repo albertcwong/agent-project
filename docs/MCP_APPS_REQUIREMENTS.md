@@ -36,9 +36,9 @@ We run a chat application where users ask natural language questions about their
 |------|----------------|------------|
 | `query-datasource` | Tabular JSON/text | Interactive chart or data grid with chart options |
 | `get-view-data` | Tabular JSON/text | View visualization or interactive chart of the data |
+| `list-datasources` | List of datasources (name, view count, etc.) | Interactive bar chart (e.g. top N datasources by usage) |
+| `get-datasource-metadata` | Field metadata (fieldCaption, type, etc.) | Data grid or schema table |
 | `search-content` | List of content items | Optional: rich preview cards with thumbnails |
-
-We do not require MCP Apps for `list-datasources` or `get-datasource-metadata`; text/metadata is sufficient.
 
 ### Technical Requirements
 
@@ -66,7 +66,7 @@ We do not require MCP Apps for `list-datasources` or `get-datasource-metadata`; 
 
 We would consider MCP Apps support complete when:
 
-1. At least `query-datasource` and `get-view-data` expose `_meta.ui.resourceUri` in their tool definitions.
+1. At least `query-datasource`, `get-view-data`, `list-datasources`, and `get-datasource-metadata` expose `_meta.ui.resourceUri` in their tool definitions.
 2. The server serves a `ui://` resource that renders an interactive chart or data grid from the tool result.
 3. The UI can be rendered in an MCP Apps–compatible host (e.g., our chat app using `@modelcontextprotocol/ext-apps` or `@mcp-ui/client`).
 4. Documentation describes how to enable MCP Apps, which tools support it, and the expected data format for the UI.

@@ -80,9 +80,9 @@ async def _stream_agent(req: AskRequest):
                 yield json.dumps({"type": "app", "app": data}) + "\n"
             elif kind == "done":
                 yield json.dumps({"type": "done", "meta": data}) + "\n"
-    except Exception as e:
+    except Exception:
         logger.exception("Agent stream failed")
-        yield _chunk_line("text", f"Error: {e}")
+        yield _chunk_line("text", "Error: Something went wrong. Please try again.")
 
 
 @router.post("/ask")
@@ -170,7 +170,10 @@ async def get_ui_resource(uri: str = "", serverId: str = "", token: str | None =
         return Response(content=content, media_type=mime)
     except Exception as e:
         logger.warning("MCP read_resource failed for %s: %s", uri, e)
-        raise HTTPException(status_code=502, detail=str(e))
+        detail = str(e)
+        if getattr(e, "exceptions", None):
+            detail = str(e.exceptions[0])
+        raise HTTPException(status_code=502, detail=detail)
 
 
 @mcp_router.post("/connect")

@@ -12,6 +12,10 @@ import { useStreamingDisplay } from "@/hooks/useStreamingDisplay";
 import { McpAppFrame } from "./McpAppFrame";
 import type { McpApp } from "@/lib/threads";
 
+function sanitizeContent(s: string): string {
+  return s.replace(/\s*unhandled errors in a TaskGroup[^\n]*/g, "").trimEnd();
+}
+
 interface Message {
   role: string;
   content: string;
@@ -103,7 +107,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
                     </details>
                   )}
                   <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-3 prose-li:my-1 prose-headings:mt-6 prose-headings:mb-3 prose-th:px-4 prose-th:py-2 prose-td:px-4 prose-td:py-2">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{sanitizeContent(msg.content)}</ReactMarkdown>
                   </div>
                   {msg.apps?.map((app, j) => (
                     <div key={j} className="mt-4">
@@ -117,7 +121,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
                   ))}
                 </>
               ) : (
-                <p className="whitespace-pre-wrap">{msg.content}</p>
+                <p className="whitespace-pre-wrap">{sanitizeContent(msg.content)}</p>
               )}
             </div>
           </div>
@@ -140,7 +144,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
               )}
               <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-3 prose-li:my-1 prose-headings:mt-6 prose-headings:mb-3 prose-th:px-4 prose-th:py-2 prose-td:px-4 prose-td:py-2">
                 {streamingContent != null ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayedContent}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{sanitizeContent(displayedContent)}</ReactMarkdown>
                 ) : (
                   <span className="animate-pulse">...</span>
                 )}

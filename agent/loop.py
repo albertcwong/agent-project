@@ -15,6 +15,13 @@ from agent.tools import get_tools_for_servers
 logger = logging.getLogger(__name__)
 
 MAX_AGENT_ITERATIONS = int(os.environ.get("MAX_AGENT_ITERATIONS", "10"))
+
+# Strip MCP SDK noise that can leak into tool results
+def _sanitize_tool_result(s: str) -> str:
+    for pattern in ("unhandled errors in a TaskGroup", "BaseExceptionGroup:"):
+        if pattern in s:
+            s = s.split(pattern)[0].rstrip()
+    return s
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "gpt-4")
 
 
@@ -86,13 +93,24 @@ async def run_agent_loop_stream(
                 if getattr(delta, "tool_calls", None):
                     tool_calls_buf.extend(delta.tool_calls)
 
+            logger.debug(
+                "Stream chunk: finish_reason=%s content_len=%d tool_calls=%d",
+                finish_reason, len(content_parts), len(tool_calls_buf),
+            )
+
             if finish_reason in ("stop", "length"):
                 content = "".join(content_parts).strip()
+                if not content:
+                    logger.warning("LLM returned stop/length with empty content (provider=%s model=%s)", provider, model)
+                    yield "text", "The model returned no response. Try switching to OpenAI—some providers do not support tool calling."
                 yield "done", {"sources": sources, "tool_calls": tool_calls_log}
                 return
 
             if not tool_calls_buf:
                 content = "".join(content_parts).strip()
+                if not content:
+                    logger.warning("LLM returned no tool_calls and empty content (provider=%s model=%s)", provider, model)
+                    yield "text", "The model returned no response. Try switching to OpenAI—some providers do not support tool calling."
                 yield "done", {"sources": sources, "tool_calls": tool_calls_log}
                 return
 
@@ -138,20 +156,21 @@ async def run_agent_loop_stream(
                 sid = cfg.get("id", cfg.get("url", ""))
                 try:
                     result = await pool["call_tool"](sid, name, args)
-                except Exception as e:
-                    result = f"Error: {e}"
+                except Exception:
                     logger.exception("Tool %s failed", name)
+                    result = "Error: MCP server connection failed. Please try again."
                 tool_results.append((name, result))
 
             for tc, (name, result) in zip(msg_tool_calls, tool_results):
-                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+                clean = _sanitize_tool_result(result)
+                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": clean})
                 ui_meta = tool_ui_map.get(name)
                 if ui_meta and ui_meta.get("resourceUri"):
                     yield "app", {
                         "resourceUri": ui_meta["resourceUri"],
                         "toolName": name,
                         "toolCallId": tc["id"],
-                        "result": result,
+                        "result": clean,
                         "serverId": ui_meta.get("serverId", ""),
                     }
 
@@ -257,9 +276,9 @@ async def run_agent_loop(
                 sid = cfg.get("id", cfg.get("url", ""))
                 try:
                     result = await pool["call_tool"](sid, name, args)
-                except Exception as e:
-                    result = f"Error: {e}"
+                except Exception:
                     logger.exception("Tool %s failed", name)
+                    result = "Error: MCP server connection failed. Please try again."
                 tool_results.append((name, result))
 
             for tc, (name, result) in zip(msg.tool_calls, tool_results):

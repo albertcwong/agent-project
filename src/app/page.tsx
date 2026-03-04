@@ -147,12 +147,13 @@ function ChatPageContent() {
           } catch (streamErr) {
             throw new Error(streamErr instanceof Error ? streamErr.message : "Stream failed");
           }
-          if (!textAcc.trim()) {
+          const content = textAcc.trim() || (thoughtAcc.trim() ? thoughtAcc.trim() : null) || (appAcc.length ? "Results:" : null);
+          if (!content) {
             throw new Error("No response from agent. The provider may not support tool calling (try OpenAI).");
           }
           appendMessages(thread.id, [{
             role: "assistant",
-            content: textAcc.trim(),
+            content,
             ...(thoughtAcc.trim() ? { thought: thoughtAcc.trim() } : {}),
             ...(appAcc.length ? { apps: appAcc } : {}),
           }]);
