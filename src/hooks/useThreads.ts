@@ -49,6 +49,16 @@ export function useThreads() {
     );
   }, []);
 
+  const remove = useCallback((id: string) => {
+    setThreads((prev) => {
+      const next = prev.filter((t) => t.id !== id);
+      if (activeId === id) {
+        setActiveId(next.length > 0 ? next[0].id : null);
+      }
+      return next;
+    });
+  }, [activeId]);
+
   const appendMessages = useCallback(
     (id: string, newMessages: ChatMessage[]) => {
       setThreads((prev) =>
@@ -74,6 +84,7 @@ export function useThreads() {
     setActive,
     create,
     updateTitle,
+    remove,
     appendMessages,
   };
 }

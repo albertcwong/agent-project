@@ -1,4 +1,4 @@
-# Uses .env, .env.agent, .env.docker from project root. Run from agent-project: docker compose up
+# Uses .env, .env.agent, .env.docker. Run: docker compose up (prod) or npm run docker:dev (hot reload)
 # For LLM/MCP on host, use host.docker.internal (see .env.docker.example).
 
 services:

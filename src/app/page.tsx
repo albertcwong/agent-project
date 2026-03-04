@@ -41,11 +41,22 @@ function ChatPageContent() {
     activeThread,
     setActive,
     create,
+    updateTitle,
+    remove,
     appendMessages,
   } = useThreads();
 
   const handleNewChat = () => {
     create();
+  };
+
+  const handleRenameThread = (id: string, currentTitle: string) => {
+    const name = window.prompt("Rename chat", currentTitle);
+    if (name != null && name.trim()) updateTitle(id, name.trim());
+  };
+
+  const handleDeleteThread = (id: string) => {
+    if (window.confirm("Delete this chat?")) remove(id);
   };
 
   const [sending, setSending] = useState(false);
@@ -178,6 +189,9 @@ function ChatPageContent() {
             if (rafId === null) rafId = requestAnimationFrame(flush);
           }
         }
+        if (!full.trim()) {
+          throw new Error("No response received. Try again or check your connection.");
+        }
         appendMessages(thread.id, [{ role: "assistant", content: full }]);
       }
     } catch (err) {
@@ -218,6 +232,8 @@ function ChatPageContent() {
         activeId={activeId}
         onNewChat={handleNewChat}
         onSelectThread={setActive}
+        onRenameThread={handleRenameThread}
+        onDeleteThread={handleDeleteThread}
       />
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {activeThread ? (

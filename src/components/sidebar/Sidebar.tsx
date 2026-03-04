@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Menu, Settings, LogIn, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useUser } from "@auth0/nextjs-auth0/client";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle, SheetDescription, SheetTrigger } from "@/components/ui/sheet";
 import { NewChatButton } from "./NewChatButton";
 import { ChatThreadList, type Thread } from "./ChatThreadList";
 import { ConnectedMcpServers } from "@/components/settings/ConnectedMcpServers";
@@ -16,6 +16,8 @@ interface SidebarProps {
   activeId: string | null;
   onNewChat: () => void;
   onSelectThread: (id: string) => void;
+  onRenameThread?: (id: string, currentTitle: string) => void;
+  onDeleteThread?: (id: string) => void;
 }
 
 const SIDEBAR_COLLAPSED_KEY = "sidebar-collapsed";
@@ -25,6 +27,8 @@ function SidebarContent({
   activeId,
   onNewChat,
   onSelectThread,
+  onRenameThread,
+  onDeleteThread,
   collapsed,
   onToggleCollapse,
 }: SidebarProps & { collapsed?: boolean; onToggleCollapse?: () => void }) {
@@ -74,6 +78,8 @@ function SidebarContent({
         threads={threads}
         activeId={activeId}
         onSelect={onSelectThread}
+        onRename={onRenameThread}
+        onDelete={onDeleteThread}
       />
       <div className="mt-auto space-y-1 border-t border-sidebar-border p-2">
         <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
@@ -86,7 +92,9 @@ function SidebarContent({
               Settings & help
             </button>
           </SheetTrigger>
-          <SheetContent side="right" className="flex w-[min(440px,95vw)] max-w-none flex-col gap-0 overflow-y-auto p-0 sm:max-w-none">
+          <SheetContent side="right" className="flex w-[min(440px,95vw)] max-w-none flex-col gap-0 overflow-y-auto p-0 sm:max-w-none" aria-describedby={undefined}>
+            <SheetTitle className="sr-only">Settings</SheetTitle>
+            <SheetDescription className="sr-only">Settings and help panel</SheetDescription>
             <div className="sticky top-0 z-10 border-b bg-background px-6 py-4">
               <h2 className="text-lg font-semibold">Settings</h2>
             </div>
@@ -166,7 +174,9 @@ export function Sidebar(props: SidebarProps) {
             <Menu className="h-5 w-5" />
           </Button>
         </SheetTrigger>
-        <SheetContent side="left" className="w-64 p-0">
+        <SheetContent side="left" className="w-64 p-0" aria-describedby={undefined}>
+          <SheetTitle className="sr-only">Navigation</SheetTitle>
+          <SheetDescription className="sr-only">Chat threads and navigation</SheetDescription>
           <SidebarContent
             {...props}
             onSelectThread={(id) => {

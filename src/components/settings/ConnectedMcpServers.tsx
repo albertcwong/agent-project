@@ -32,6 +32,33 @@ export function ConnectedMcpServers() {
     setConnected(new Set(getConnectedMcpServers()));
   }, []);
 
+  // Verify connected servers when panel opens – clear stale/expired tokens
+  useEffect(() => {
+    if (servers.length === 0) return;
+    const ids = getConnectedMcpServers();
+    ids.forEach(async (id) => {
+      const token = getMcpServerToken(id);
+      try {
+        const res = await fetch("/api/mcp/connect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ serverId: id, token: token || undefined }),
+        });
+        if (!res.ok) {
+          setConnected((c) => {
+            const next = new Set(c);
+            next.delete(id);
+            setConnectedMcpServers([...next]);
+            removeMcpServerToken(id);
+            return next;
+          });
+        }
+      } catch {
+        // ignore network errors
+      }
+    });
+  }, [servers]);
+
   const handleConnect = async (id: string, server: Server) => {
     if (server.oauthBaseUrl) {
       window.location.href = `/api/mcp/oauth/connect?serverId=${encodeURIComponent(id)}`;

@@ -34,7 +34,7 @@ async def run_agent_loop_stream(
 
     tools = await get_tools_for_servers(server_configs)
     if not tools:
-        yield "text", "No Tableau tools available. Sign in with Tableau in Settings & Help, then try again."
+        yield "text", "No Tableau tools available. Your session may have expired — sign in again in Settings & Help."
         yield "done", {"sources": [], "tool_calls": []}
         return
 
@@ -52,7 +52,8 @@ async def run_agent_loop_stream(
     for m in (history or []):
         if m.get("role") in ("user", "assistant") and m.get("content"):
             messages.append({"role": m["role"], "content": m["content"]})
-    messages.append({"role": "user", "content": question})
+    user_content = f"[Tableau is connected.] {question}" if server_configs and tools else question
+    messages.append({"role": "user", "content": user_content})
 
     tool_calls_log: list[dict] = []
     sources: list[dict] = []
@@ -169,7 +170,7 @@ async def run_agent_loop(
     tools = await get_tools_for_servers(server_configs)
     if not tools:
         return (
-            "No Tableau tools available. Sign in with Tableau in Settings & Help, then try again.",
+            "No Tableau tools available. Your session may have expired — sign in again in Settings & Help.",
             [],
             [],
         )
@@ -188,7 +189,8 @@ async def run_agent_loop(
     for m in (history or []):
         if m.get("role") in ("user", "assistant") and m.get("content"):
             messages.append({"role": m["role"], "content": m["content"]})
-    messages.append({"role": "user", "content": question})
+    user_content = f"[Tableau is connected.] {question}" if server_configs and tools else question
+    messages.append({"role": "user", "content": user_content})
 
     tool_calls_log: list[dict] = []
     sources: list[dict] = []

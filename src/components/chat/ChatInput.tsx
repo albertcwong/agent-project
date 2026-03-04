@@ -51,7 +51,12 @@ export function ChatInput({ onSend, onModelChange, agentMode, onAgentModeChange,
         disabled={disabled}
         className="flex-1"
       />
-      <Button type="submit" size="icon" disabled={disabled || !input.trim()}>
+      <Button
+        type="submit"
+        size="icon"
+        disabled={disabled || !input.trim() || !modelOption}
+        title={!modelOption ? "Select a model first" : undefined}
+      >
         <Send className="h-4 w-4" />
       </Button>
     </form>
