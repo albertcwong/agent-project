@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { useThreads } from "@/hooks/useThreads";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { ChatContainer } from "@/components/chat/ChatContainer";
@@ -12,9 +13,28 @@ const PROVIDER_LABELS: Record<string, string> = {
   endor: "Endor",
 };
 
-export default function ChatPage() {
+const OAUTH_ERROR_MSG: Record<string, string> = {
+  callback_failed: "MCP sign-in failed. Ensure the agent is running and reachable.",
+  agent_unreachable: "Could not reach agent. In Docker, ensure AGENT_API_URL=http://agent:8001.",
+  mcp_unreachable:
+    "Could not reach MCP server. In Docker, use host.docker.internal in TABLEAU_MCP_SERVERS (e.g. http://host.docker.internal:3927/tableau-mcp).",
+  server_not_found: "MCP server not found.",
+  no_token: "MCP did not return a token.",
+};
+
+function ChatPageContent() {
+  const searchParams = useSearchParams();
+  const [oauthError, setOauthError] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [agentMode, setAgentMode] = useState(false);
+
+  useEffect(() => {
+    const err = searchParams.get("oauth_error");
+    if (err) {
+      setOauthError(OAUTH_ERROR_MSG[err] || err);
+      window.history.replaceState({}, "", "/");
+    }
+  }, [searchParams]);
   const {
     threads,
     activeId,
@@ -183,7 +203,16 @@ export default function ChatPage() {
   }));
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen flex-col">
+      {oauthError && (
+        <div className="flex items-center justify-between gap-4 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          <span>{oauthError}</span>
+          <button onClick={() => setOauthError(null)} className="shrink-0 hover:underline">
+            Dismiss
+          </button>
+        </div>
+      )}
+      <div className="flex min-h-0 flex-1">
       <Sidebar
         threads={sidebarThreads}
         activeId={activeId}
@@ -218,6 +247,15 @@ export default function ChatPage() {
           </div>
         )}
       </main>
+      </div>
     </div>
+  );
+}
+
+export default function ChatPage() {
+  return (
+    <Suspense fallback={null}>
+      <ChatPageContent />
+    </Suspense>
   );
 }
