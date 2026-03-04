@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.env*
+*.md
+!README.md
+__pycache__
+.venv
+*.pyc
+.pytest_cache
+.coverage
+htmlcov
+.DS_Store

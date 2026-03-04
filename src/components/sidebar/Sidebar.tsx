@@ -8,6 +8,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { NewChatButton } from "./NewChatButton";
 import { ChatThreadList, type Thread } from "./ChatThreadList";
 import { ConnectedMcpServers } from "@/components/settings/ConnectedMcpServers";
+import { ModelReload } from "@/components/settings/ModelReload";
 import { StreamingToggle } from "@/components/settings/StreamingToggle";
 
 interface SidebarProps {
@@ -85,10 +86,21 @@ function SidebarContent({
               Settings & help
             </button>
           </SheetTrigger>
-          <SheetContent side="right" className="w-96 overflow-y-auto">
-            <h2 className="mb-4 text-lg font-semibold">Settings</h2>
-            <StreamingToggle />
-            <ConnectedMcpServers />
+          <SheetContent side="right" className="flex w-[min(440px,95vw)] max-w-none flex-col gap-0 overflow-y-auto p-0 sm:max-w-none">
+            <div className="sticky top-0 z-10 border-b bg-background px-6 py-4">
+              <h2 className="text-lg font-semibold">Settings</h2>
+            </div>
+            <div className="flex flex-1 flex-col gap-6 overflow-y-auto p-6">
+              <section className="rounded-lg border bg-muted/30 p-4">
+                <StreamingToggle />
+              </section>
+              <section className="rounded-lg border bg-muted/30 p-4">
+                <ModelReload />
+              </section>
+              <section className="rounded-lg border bg-muted/30 p-4">
+                <ConnectedMcpServers />
+              </section>
+            </div>
           </SheetContent>
         </Sheet>
         <AuthButtons />

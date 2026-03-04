@@ -1,0 +1,48 @@
+# Uses .env, .env.agent, .env.docker from project root. Run from agent-project: docker compose up
+# For LLM/MCP on host, use host.docker.internal (see .env.docker.example).
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_AUTH_DISABLED: ${NEXT_PUBLIC_AUTH_DISABLED:-}
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+      - .env.docker
+    environment:
+      - AGENT_API_URL=http://agent:8001
+      - AUTH_DISABLED=${AUTH_DISABLED:-}
+      - NEXT_PUBLIC_AUTH_DISABLED=${NEXT_PUBLIC_AUTH_DISABLED:-}
+      - AUTH0_DOMAIN=${AUTH0_DOMAIN:-}
+      - AUTH0_CLIENT_ID=${AUTH0_CLIENT_ID:-}
+      - AUTH0_CLIENT_SECRET=${AUTH0_CLIENT_SECRET:-}
+      - AUTH0_SECRET=${AUTH0_SECRET:-}
+      - APP_BASE_URL=${APP_BASE_URL:-http://localhost:3000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - agent
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+      - .env.agent
+      - .env.docker
+    environment:
+      - LLM_PROXY_API_KEY=${LLM_PROXY_API_KEY:-}
+      - LLM_PROXY_PROVIDER=${LLM_PROXY_PROVIDER:-openai}
+      - MAX_AGENT_ITERATIONS=${MAX_AGENT_ITERATIONS:-10}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./.env.agent:/app/.env.agent:ro

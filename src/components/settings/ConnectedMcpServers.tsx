@@ -88,24 +88,25 @@ export function ConnectedMcpServers() {
         {servers.map((s) => (
           <li
             key={s.id}
-            className="flex items-center justify-between rounded-lg border p-3"
+            className="flex flex-col gap-2 rounded-lg border border-border bg-background p-3"
           >
-            <div>
+            <div className="min-w-0">
               <span className="font-medium">{s.name}</span>
-              <span className="ml-2 text-xs text-muted-foreground">
+              <span className="ml-2 truncate text-xs text-muted-foreground">
                 {s.url}
               </span>
               {error[s.id] && (
                 <p className="mt-1 text-xs text-destructive">{error[s.id]}</p>
               )}
             </div>
-            <div className="flex gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               {connected.has(s.id) ? (
                 <>
                   <span className="text-xs text-green-600">Connected</span>
                   <Button
                     variant="outline"
                     size="sm"
+                    className="min-w-[11rem]"
                     onClick={() => handleDisconnect(s.id)}
                   >
                     Disconnect
@@ -114,10 +115,15 @@ export function ConnectedMcpServers() {
               ) : (
                 <Button
                   size="sm"
+                  className="min-w-[11rem]"
                   onClick={() => handleConnect(s.id, s)}
                   disabled={loading[s.id]}
                 >
-                  {loading[s.id] ? "Connecting…" : s.oauthBaseUrl ? "Sign in with Tableau" : "Connect"}
+                  {loading[s.id]
+                    ? "Connecting…"
+                    : s.oauthBaseUrl
+                      ? "Sign in with Tableau"
+                      : "Connect"}
                 </Button>
               )}
             </div>

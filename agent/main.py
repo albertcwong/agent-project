@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Load .env and .env.agent (when running locally). In Docker, env_file provides vars.
+load_dotenv(".env")
 load_dotenv(".env.agent")
 
 from agent.routes import mcp_router, router

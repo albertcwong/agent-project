@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { ChevronDown } from "lucide-react";
+import { MODELS_RELOAD_EVENT } from "@/components/settings/ModelReload";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -35,8 +36,11 @@ export function ModelSelector({ value, onChange }: ModelSelectorProps) {
     Record<string, { id: string }[]>
   >({});
   const [loading, setLoading] = useState(true);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
-  useEffect(() => {
+  const fetchModels = useCallback(() => {
+    setLoading(true);
     const storedModel = typeof window !== "undefined" ? localStorage.getItem(MODEL_STORAGE_KEY) : null;
     const storedProvider = typeof window !== "undefined" ? localStorage.getItem(PROVIDER_STORAGE_KEY) : null;
 
@@ -44,15 +48,16 @@ export function ModelSelector({ value, onChange }: ModelSelectorProps) {
       .then((res) => res.json())
       .then((data) => {
         setModelsByProvider(data);
+        const cb = onChangeRef.current;
         if (Object.keys(data).length === 0) return;
         if (storedModel && storedProvider && data[storedProvider]?.some((m: { id: string }) => m.id === storedModel)) {
-          onChange(storedModel, storedProvider);
+          cb(storedModel, storedProvider);
           return;
         }
         const firstProvider = Object.keys(data)[0];
         const firstModel = data[firstProvider]?.[0]?.id;
         if (firstModel) {
-          onChange(firstModel, firstProvider);
+          cb(firstModel, firstProvider);
           if (typeof window !== "undefined") {
             localStorage.setItem(MODEL_STORAGE_KEY, firstModel);
             localStorage.setItem(PROVIDER_STORAGE_KEY, firstProvider);
@@ -61,10 +66,20 @@ export function ModelSelector({ value, onChange }: ModelSelectorProps) {
       })
       .catch(() => {
         setModelsByProvider({});
-        onChange("gpt-4", "openai");
+        onChangeRef.current("gpt-4", "openai");
       })
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    fetchModels();
+  }, [fetchModels]);
+
+  useEffect(() => {
+    const handler = () => fetchModels();
+    window.addEventListener(MODELS_RELOAD_EVENT, handler);
+    return () => window.removeEventListener(MODELS_RELOAD_EVENT, handler);
+  }, [fetchModels]);
 
   const handleSelect = (modelId: string, provider: string) => {
     onChange(modelId, provider);
