@@ -1,64 +1,222 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useState, useCallback } from "react";
+import { useThreads } from "@/hooks/useThreads";
+import { Sidebar } from "@/components/sidebar/Sidebar";
+import { ChatContainer } from "@/components/chat/ChatContainer";
+import { getConnectedMcpServers, getMcpTokens, getAgentStreaming } from "@/lib/threads";
+
+const PROVIDER_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  salesforce: "Salesforce",
+  endor: "Endor",
+};
+
+export default function ChatPage() {
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [agentMode, setAgentMode] = useState(false);
+  const {
+    threads,
+    activeId,
+    activeThread,
+    setActive,
+    create,
+    appendMessages,
+  } = useThreads();
+
+  const handleNewChat = () => {
+    create();
+  };
+
+  const [sending, setSending] = useState(false);
+
+  const [streamingContent, setStreamingContent] = useState<string | null>(null);
+  const [streamingThought, setStreamingThought] = useState<string | null>(null);
+
+  const handleSend = useCallback(async (
+    content: string,
+    model: string,
+    provider: string
+  ) => {
+    let thread = activeThread;
+    if (!thread) {
+      thread = create();
+    }
+    appendMessages(thread.id, [{ role: "user", content }]);
+    setSending(true);
+    setStreamingContent("");
+    let rafId: number | null = null;
+
+    try {
+      if (agentMode) {
+        const useStream = getAgentStreaming();
+        const history = thread.messages
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .map((m) => ({ role: m.role, content: m.content }));
+        const body = {
+          question: content,
+          model,
+          provider,
+          connectedServers: getConnectedMcpServers(),
+          tokens: getMcpTokens(),
+          history,
+        };
+        const res = await fetch(useStream ? "/api/agent/ask" : "/api/agent/ask/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || res.statusText);
+        }
+        if (useStream) {
+          const reader = res.body?.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let thoughtAcc = "";
+          let textAcc = "";
+          const flush = () => {
+            rafId = null;
+            setStreamingThought(thoughtAcc || null);
+            setStreamingContent(textAcc || null);
+          };
+          try {
+            if (reader) {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop() ?? "";
+                for (const line of lines) {
+                  if (!line.trim()) continue;
+                  try {
+                    const obj = JSON.parse(line);
+                    if (obj.type === "thought") thoughtAcc += (thoughtAcc ? "\n\n" : "") + (obj.content ?? "");
+                    else if (obj.type === "text") textAcc += obj.content ?? "";
+                    else if (obj.type === "done") { /* meta available if needed */ }
+                  } catch {
+                    // skip malformed lines
+                  }
+                }
+                if (rafId === null) rafId = requestAnimationFrame(flush);
+              }
+              for (const line of buffer.split("\n").filter(Boolean)) {
+                try {
+                  const obj = JSON.parse(line);
+                  if (obj.type === "thought") thoughtAcc += obj.content ?? "";
+                  else if (obj.type === "text") textAcc += obj.content ?? "";
+                } catch { /* skip */ }
+              }
+            }
+          } catch (streamErr) {
+            throw new Error(streamErr instanceof Error ? streamErr.message : "Stream failed");
+          }
+          if (!textAcc.trim()) {
+            throw new Error("No response from agent. The provider may not support tool calling (try OpenAI).");
+          }
+          appendMessages(thread.id, [{
+            role: "assistant",
+            content: textAcc.trim(),
+            ...(thoughtAcc.trim() ? { thought: thoughtAcc.trim() } : {}),
+          }]);
+        } else {
+          const data = await res.json().catch(() => ({}));
+          const answer = data.answer ?? "";
+          if (!answer) {
+            throw new Error(data.error || "No response from agent.");
+          }
+          appendMessages(thread.id, [{ role: "assistant", content: answer }]);
+        }
+      } else {
+        const messages = [
+          ...thread.messages,
+          { role: "user" as const, content },
+        ];
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages, model, provider }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || res.statusText);
+        }
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        let full = "";
+        const flush = () => {
+          rafId = null;
+          setStreamingContent(full);
+        };
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            full += decoder.decode(value, { stream: true });
+            if (rafId === null) rafId = requestAnimationFrame(flush);
+          }
+        }
+        appendMessages(thread.id, [{ role: "assistant", content: full }]);
+      }
+    } catch (err) {
+      appendMessages(thread.id, [
+        {
+          role: "assistant",
+          content: `Error: ${err instanceof Error ? err.message : "Request failed"}`,
+        },
+      ]);
+    } finally {
+      setSending(false);
+      setStreamingContent(null);
+      setStreamingThought(null);
+      if (typeof rafId === "number") cancelAnimationFrame(rafId);
+    }
+  }, [activeThread, create, appendMessages, agentMode]);
+
+  const sidebarThreads = threads.map((t) => ({
+    id: t.id,
+    title: t.title,
+    messages: t.messages,
+    createdAt: t.createdAt,
+  }));
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="flex h-screen">
+      <Sidebar
+        threads={sidebarThreads}
+        activeId={activeId}
+        onNewChat={handleNewChat}
+        onSelectThread={setActive}
+      />
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {activeThread ? (
+          <ChatContainer
+            title={activeThread.title}
+            modelName={selectedModel || "Select model"}
+            messages={activeThread.messages}
+            streamingContent={streamingContent}
+            streamingThought={streamingThought}
+            onSend={handleSend}
+            onModelChange={(id, provider) =>
+              setSelectedModel(`${id} (${PROVIDER_LABELS[provider] || provider})`)
+            }
+            disabled={sending}
+            agentMode={agentMode}
+            onAgentModeChange={setAgentMode}
+          />
+        ) : (
+          <div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
+            <p>Start a new chat to begin</p>
+            <button
+              onClick={handleNewChat}
+              className="text-primary hover:underline"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+              New chat
+            </button>
+          </div>
+        )}
       </main>
     </div>
   );

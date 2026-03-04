@@ -1,0 +1,115 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { ChevronDown } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+const MODEL_STORAGE_KEY = "chat-selected-model";
+const PROVIDER_STORAGE_KEY = "chat-selected-provider";
+
+export interface ModelOption {
+  id: string;
+  provider: string;
+}
+
+interface ModelSelectorProps {
+  value: ModelOption | null;
+  onChange: (model: string, provider: string) => void;
+}
+
+const PROVIDER_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  salesforce: "Salesforce",
+  endor: "Endor",
+};
+
+export function ModelSelector({ value, onChange }: ModelSelectorProps) {
+  const [modelsByProvider, setModelsByProvider] = useState<
+    Record<string, { id: string }[]>
+  >({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const storedModel = typeof window !== "undefined" ? localStorage.getItem(MODEL_STORAGE_KEY) : null;
+    const storedProvider = typeof window !== "undefined" ? localStorage.getItem(PROVIDER_STORAGE_KEY) : null;
+
+    fetch("/api/models")
+      .then((res) => res.json())
+      .then((data) => {
+        setModelsByProvider(data);
+        if (Object.keys(data).length === 0) return;
+        if (storedModel && storedProvider && data[storedProvider]?.some((m: { id: string }) => m.id === storedModel)) {
+          onChange(storedModel, storedProvider);
+          return;
+        }
+        const firstProvider = Object.keys(data)[0];
+        const firstModel = data[firstProvider]?.[0]?.id;
+        if (firstModel) {
+          onChange(firstModel, firstProvider);
+          if (typeof window !== "undefined") {
+            localStorage.setItem(MODEL_STORAGE_KEY, firstModel);
+            localStorage.setItem(PROVIDER_STORAGE_KEY, firstProvider);
+          }
+        }
+      })
+      .catch(() => {
+        setModelsByProvider({});
+        onChange("gpt-4", "openai");
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSelect = (modelId: string, provider: string) => {
+    onChange(modelId, provider);
+    if (typeof window !== "undefined") {
+      localStorage.setItem(MODEL_STORAGE_KEY, modelId);
+      localStorage.setItem(PROVIDER_STORAGE_KEY, provider);
+    }
+  };
+
+  const displayLabel = value
+    ? `${value.id} (${PROVIDER_LABELS[value.provider] || value.provider})`
+    : "Select model";
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm" disabled={loading}>
+          {loading ? "Loading..." : displayLabel}
+          <ChevronDown className="ml-1 h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-56">
+        {Object.entries(modelsByProvider).map(([provider, models]) =>
+          models.length > 0 ? (
+            <div key={provider}>
+              <DropdownMenuLabel>
+                {PROVIDER_LABELS[provider] || provider}
+              </DropdownMenuLabel>
+              {models.map((m) => (
+                <DropdownMenuItem
+                  key={`${provider}-${m.id}`}
+                  onClick={() => handleSelect(m.id, provider)}
+                >
+                  {m.id}
+                </DropdownMenuItem>
+              ))}
+            </div>
+          ) : null
+        )}
+        {!loading && Object.keys(modelsByProvider).length === 0 && (
+          <DropdownMenuLabel className="text-muted-foreground">
+            No models available
+          </DropdownMenuLabel>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
