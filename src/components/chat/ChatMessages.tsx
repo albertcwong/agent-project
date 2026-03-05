@@ -10,7 +10,7 @@ import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 import { useStreamingDisplay } from "@/hooks/useStreamingDisplay";
 import { McpAppFrame } from "./McpAppFrame";
-import type { McpApp } from "@/lib/threads";
+import type { McpApp, FileDownload } from "@/lib/threads";
 
 function sanitizeContent(s: string): string {
   return s.replace(/\s*unhandled errors in a TaskGroup[^\n]*/g, "").trimEnd();
@@ -21,6 +21,7 @@ interface Message {
   content: string;
   thought?: string;
   apps?: McpApp[];
+  downloads?: FileDownload[];
 }
 
 interface ChatMessagesProps {
@@ -117,6 +118,17 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
                         result={app.result}
                         serverId={app.serverId}
                       />
+                    </div>
+                  ))}
+                  {msg.downloads?.map((d, j) => (
+                    <div key={j} className="mt-2">
+                      <a
+                        href={`data:application/octet-stream;base64,${d.contentBase64}`}
+                        download={d.filename}
+                        className="text-primary underline hover:no-underline"
+                      >
+                        Download {d.filename}
+                      </a>
                     </div>
                   ))}
                 </>

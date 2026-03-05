@@ -3,18 +3,58 @@
 import json
 import logging
 import os
+import uuid
 
 import httpx
+
 from openai import AsyncOpenAI
 
 STREAM_READ_TIMEOUT = float(os.environ.get("LLM_STREAM_READ_TIMEOUT", "300"))
 
 from agent.mcp_client import mcp_session_pool
-from agent.tools import get_tools_for_servers
+from agent.tools import DOWNLOAD_TOOLS, WRITE_TOOLS, get_tools_for_servers
 
 logger = logging.getLogger(__name__)
 
 MAX_AGENT_ITERATIONS = int(os.environ.get("MAX_AGENT_ITERATIONS", "10"))
+
+# Tools that return chartable data; metadata-only tools (e.g. get-datasource-metadata) excluded
+_CHART_TOOLS = {"query-datasource", "get-view-data"}
+
+# Keywords indicating user wants a chart/visualization (MCP app)
+_CHART_KEYWORDS = (
+    "chart", "charts", "visualization", "visualize", "graph", "graphs",
+    "bar chart", "pie chart", "line chart", "plot", "visual", "show as chart",
+    "show as graph", "display as chart", "display as graph",
+)
+
+
+def _user_wants_chart(question: str) -> bool:
+    """True if the user's message indicates they want a chart or visualization."""
+    q = (question or "").lower()
+    return any(kw in q for kw in _CHART_KEYWORDS)
+
+
+def _result_has_chart_data(result: str, tool_name: str) -> bool:
+    """True if the tool result contains data suitable for charting. Skip empty, errors, metadata-only, or JSON with no rows."""
+    s = (result or "").strip()
+    if not s:
+        return False
+    if s.startswith("Error:"):
+        return False
+    if tool_name not in _CHART_TOOLS:
+        return False
+    try:
+        p = json.loads(s)
+        if not isinstance(p, dict):
+            return len(s) > 50
+        arr = p.get("rows") or p.get("data") or p.get("items") or p.get("datasources") or p.get("workbooks") or []
+        if isinstance(arr, list) and len(arr) > 0:
+            return True
+        return False
+    except (json.JSONDecodeError, TypeError):
+        return len(s) > 50
+
 
 # Strip MCP SDK noise that can leak into tool results
 def _sanitize_tool_result(s: str) -> str:
@@ -32,6 +72,7 @@ async def run_agent_loop_stream(
     provider: str = "openai",
     model: str | None = None,
     history: list[dict] | None = None,
+    write_confirmation: dict | None = None,
 ):
     """Async generator yielding (chunk_type, data). chunk_type: "thought" | "text" | "done". data: str for thought/text, dict for done."""
     if not server_configs:
@@ -66,7 +107,7 @@ async def run_agent_loop_stream(
         tool_calls_log: list[dict] = []
         sources: list[dict] = []
 
-        for _ in range(MAX_AGENT_ITERATIONS):
+        for iteration in range(MAX_AGENT_ITERATIONS):
             stream = await client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -89,7 +130,6 @@ async def run_agent_loop_stream(
                     yield "thought", (reasoning if isinstance(reasoning, str) else str(reasoning))
                 if getattr(delta, "content", None):
                     content_parts.append(delta.content)
-                    yield "text", delta.content
                 if getattr(delta, "tool_calls", None):
                     tool_calls_buf.extend(delta.tool_calls)
 
@@ -98,19 +138,24 @@ async def run_agent_loop_stream(
                 finish_reason, len(content_parts), len(tool_calls_buf),
             )
 
+            content = "".join(content_parts).strip()
+            # Only yield text when not running tool calls this turn—avoids duplicate intro (model emits it before + after tools)
+            will_run_tools = bool(tool_calls_buf)
             if finish_reason in ("stop", "length"):
-                content = "".join(content_parts).strip()
                 if not content:
                     logger.warning("LLM returned stop/length with empty content (provider=%s model=%s)", provider, model)
                     yield "text", "The model returned no response. Try switching to OpenAI—some providers do not support tool calling."
+                elif not will_run_tools:
+                    yield "text", content
                 yield "done", {"sources": sources, "tool_calls": tool_calls_log}
                 return
 
             if not tool_calls_buf:
-                content = "".join(content_parts).strip()
                 if not content:
                     logger.warning("LLM returned no tool_calls and empty content (provider=%s model=%s)", provider, model)
                     yield "text", "The model returned no response. Try switching to OpenAI—some providers do not support tool calling."
+                else:
+                    yield "text", content
                 yield "done", {"sources": sources, "tool_calls": tool_calls_log}
                 return
 
@@ -152,6 +197,15 @@ async def run_agent_loop_stream(
                 except json.JSONDecodeError:
                     args = {}
                 tool_calls_log.append({"name": name, "arguments": args})
+
+                if name in WRITE_TOOLS and not write_confirmation:
+                    yield "confirm", {
+                        "action": {"toolName": name, "arguments": args},
+                        "correlationId": str(uuid.uuid4()),
+                    }
+                    yield "done", {"sources": sources, "tool_calls": tool_calls_log, "awaitingConfirmation": True}
+                    return
+
                 cfg = tool_server_map.get(name) or server_configs[0]
                 sid = cfg.get("id", cfg.get("url", ""))
                 try:
@@ -163,9 +217,17 @@ async def run_agent_loop_stream(
 
             for tc, (name, result) in zip(msg_tool_calls, tool_results):
                 clean = _sanitize_tool_result(result)
+                if name in DOWNLOAD_TOOLS:
+                    try:
+                        parsed = json.loads(clean)
+                        if isinstance(parsed, dict) and "filename" in parsed and "contentBase64" in parsed:
+                            yield "download", {"filename": parsed["filename"], "contentBase64": parsed["contentBase64"]}
+                            clean = f'Downloaded: {parsed["filename"]}'
+                    except (json.JSONDecodeError, TypeError):
+                        pass
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": clean})
                 ui_meta = tool_ui_map.get(name)
-                if ui_meta and ui_meta.get("resourceUri"):
+                if ui_meta and ui_meta.get("resourceUri") and _user_wants_chart(question) and _result_has_chart_data(clean, name):
                     yield "app", {
                         "resourceUri": ui_meta["resourceUri"],
                         "toolName": name,
@@ -185,7 +247,8 @@ async def run_agent_loop(
     provider: str = "openai",
     model: str | None = None,
     history: list[dict] | None = None,
-) -> tuple[str, list[dict], list[dict]]:
+    write_confirmation: dict | None = None,
+) -> tuple[str, list[dict], list[dict], bool]:
     """
     Run the agent loop. Returns (answer, sources, tool_calls).
     If server_configs is empty, returns a prompt to connect a server.
@@ -195,6 +258,7 @@ async def run_agent_loop(
             "Please connect at least one Tableau MCP server in Settings & Help before asking Tableau questions.",
             [],
             [],
+            False,
         )
 
     async with mcp_session_pool(server_configs) as pool:
@@ -204,6 +268,7 @@ async def run_agent_loop(
                 "No Tableau tools available. Your session may have expired — sign in again in Settings & Help.",
                 [],
                 [],
+                False,
             )
 
         base_url = os.environ.get("LLM_PROXY_URL", "http://localhost:8000").rstrip("/")
@@ -235,18 +300,18 @@ async def run_agent_loop(
             )
             choice = resp.choices[0] if resp.choices else None
             if not choice:
-                return ("No response from model.", sources, tool_calls_log)
+                return ("No response from model.", sources, tool_calls_log, False)
 
             msg = choice.message
             finish_reason = getattr(choice, "finish_reason", None) or "stop"
 
             if finish_reason in ("stop", "length"):
                 content = (msg.content or "").strip()
-                return (content or "No answer generated.", sources, tool_calls_log)
+                return (content or "No answer generated.", sources, tool_calls_log, False)
 
             if not msg.tool_calls:
                 content = (msg.content or "").strip()
-                return (content or "No answer generated.", sources, tool_calls_log)
+                return (content or "No answer generated.", sources, tool_calls_log, False)
 
             messages.append(
                 {
@@ -272,6 +337,15 @@ async def run_agent_loop(
                 except json.JSONDecodeError:
                     args = {}
                 tool_calls_log.append({"name": name, "arguments": args})
+
+                if name in WRITE_TOOLS and not write_confirmation:
+                    return (
+                        "Please confirm the publish action to proceed.",
+                        sources,
+                        tool_calls_log,
+                        True,
+                    )
+
                 cfg = tool_server_map.get(name) or server_configs[0]
                 sid = cfg.get("id", cfg.get("url", ""))
                 try:
@@ -288,4 +362,5 @@ async def run_agent_loop(
         "Maximum iterations reached. The question may be too complex or the tools did not return enough information.",
         sources,
         tool_calls_log,
+        False,
     )

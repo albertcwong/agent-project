@@ -12,9 +12,33 @@ logger = logging.getLogger(__name__)
 REQUIRED_TOOLS = {
     "search-content",
     "list-datasources",
+    "list-workbooks",
+    "list-views",
+    "get-workbook",
     "get-datasource-metadata",
     "query-datasource",
     "get-view-data",
+    "download-workbook",
+    "download-datasource",
+    "download-flow",
+    "inspect-workbook-file",
+    "inspect-datasource-file",
+    "inspect-flow-file",
+    "publish-workbook",
+    "publish-datasource",
+    "publish-flow",
+    "list-projects",
+    "list-flows",
+}
+
+# Tools that return file content; agent streams as download chunk
+DOWNLOAD_TOOLS = {"download-workbook", "download-datasource", "download-flow"}
+
+# Tools that modify server state; require user confirmation before execution
+WRITE_TOOLS = {
+    "publish-workbook",
+    "publish-datasource",
+    "publish-flow",
 }
 
 

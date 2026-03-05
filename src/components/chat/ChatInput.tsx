@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Send } from "lucide-react";
+import { Send, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ModeSelector } from "./ModeSelector";
@@ -9,13 +9,15 @@ import { ModelSelector, type ModelOption } from "./ModelSelector";
 
 interface ChatInputProps {
   onSend: (content: string, model: string, provider: string) => Promise<void>;
+  onCancel?: () => void;
   onModelChange?: (model: string, provider: string) => void;
   agentMode?: boolean;
   onAgentModeChange?: (v: boolean) => void;
   disabled?: boolean;
+  sending?: boolean;
 }
 
-export function ChatInput({ onSend, onModelChange, agentMode, onAgentModeChange, disabled }: ChatInputProps) {
+export function ChatInput({ onSend, onCancel, onModelChange, agentMode, onAgentModeChange, disabled, sending }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [modelOption, setModelOption] = useState<ModelOption | null>(null);
 
@@ -51,14 +53,26 @@ export function ChatInput({ onSend, onModelChange, agentMode, onAgentModeChange,
         disabled={disabled}
         className="flex-1"
       />
-      <Button
-        type="submit"
-        size="icon"
-        disabled={disabled || !input.trim() || !modelOption}
-        title={!modelOption ? "Select a model first" : undefined}
-      >
-        <Send className="h-4 w-4" />
-      </Button>
+      {sending && onCancel ? (
+        <Button
+          type="button"
+          size="icon"
+          variant="destructive"
+          onClick={onCancel}
+          title="Stop generating"
+        >
+          <Square className="h-4 w-4" />
+        </Button>
+      ) : (
+        <Button
+          type="submit"
+          size="icon"
+          disabled={disabled || !input.trim() || !modelOption}
+          title={!modelOption ? "Select a model first" : undefined}
+        >
+          <Send className="h-4 w-4" />
+        </Button>
+      )}
     </form>
   );
 }

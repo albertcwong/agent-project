@@ -16,6 +16,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Agent Suite Chat",
   description: "Chat UI for LLM proxy",
+  icons: { icon: "/favicon.svg" },
 };
 
 export default function RootLayout({

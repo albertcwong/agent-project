@@ -5,11 +5,17 @@ export interface McpApp {
   serverId: string;
 }
 
+export interface FileDownload {
+  filename: string;
+  contentBase64: string;
+}
+
 export interface ChatMessage {
   role: string;
   content: string;
   thought?: string;
   apps?: McpApp[];
+  downloads?: FileDownload[];
 }
 
 export interface Thread {
@@ -136,6 +142,35 @@ export function setAgentStreaming(enabled: boolean): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(AGENT_STREAMING_KEY, String(enabled));
+  } catch {
+    // ignore
+  }
+}
+
+const WRITE_CONFIRM_SESSION_KEY = "write-confirmation-scope-session";
+const WRITE_CONFIRM_FOREVER_KEY = "write-confirmation-scope-forever";
+
+export function getWriteConfirmationScope(): { scope: "session" | "forever" } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const forever = localStorage.getItem(WRITE_CONFIRM_FOREVER_KEY);
+    if (forever === "forever") return { scope: "forever" };
+    const session = sessionStorage.getItem(WRITE_CONFIRM_SESSION_KEY);
+    if (session === "session") return { scope: "session" };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function setWriteConfirmationScope(scope: "session" | "forever"): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (scope === "forever") {
+      localStorage.setItem(WRITE_CONFIRM_FOREVER_KEY, "forever");
+    } else {
+      sessionStorage.setItem(WRITE_CONFIRM_SESSION_KEY, "session");
+    }
   } catch {
     // ignore
   }

@@ -26,6 +26,10 @@ class HistoryMessage(BaseModel):
     content: str
 
 
+class WriteConfirmation(BaseModel):
+    scope: str  # "once" | "session" | "forever"
+
+
 class AskRequest(BaseModel):
     question: str
     provider: str = "openai"
@@ -33,12 +37,14 @@ class AskRequest(BaseModel):
     tokens: dict[str, str] = {}
     model: str | None = None
     history: list[HistoryMessage] = []
+    writeConfirmation: WriteConfirmation | None = None
 
 
 class AskResponse(BaseModel):
     answer: str
     sources: list[dict] = []
     tool_calls: list[dict] = []
+    awaitingConfirmation: bool = False
 
 
 def _resolve_server_configs(connected_ids: list[str], client_tokens: dict[str, str] | None = None) -> list[dict]:
@@ -64,6 +70,7 @@ async def _stream_agent(req: AskRequest):
     try:
         server_configs = _resolve_server_configs(req.connectedServers, req.tokens)
         history = [{"role": m.role, "content": m.content} for m in req.history]
+        write_conf = req.writeConfirmation.model_dump() if req.writeConfirmation else None
         async for kind, data in run_agent_loop_stream(
             question=req.question,
             system_prompt=TABLEAU_AGENT_SYSTEM_PROMPT,
@@ -71,6 +78,7 @@ async def _stream_agent(req: AskRequest):
             provider=req.provider,
             model=req.model,
             history=history,
+            write_confirmation=write_conf,
         ):
             if kind == "thought":
                 yield _chunk_line("thought", data)
@@ -78,6 +86,10 @@ async def _stream_agent(req: AskRequest):
                 yield _chunk_line("text", data)
             elif kind == "app":
                 yield json.dumps({"type": "app", "app": data}) + "\n"
+            elif kind == "confirm":
+                yield json.dumps({"type": "confirm", **data}) + "\n"
+            elif kind == "download":
+                yield json.dumps({"type": "download", "download": data}) + "\n"
             elif kind == "done":
                 yield json.dumps({"type": "done", "meta": data}) + "\n"
     except Exception:
@@ -101,16 +113,18 @@ async def ask_sync(req: AskRequest):
     logger.info("Agent ask sync: model=%s provider=%s", req.model, req.provider)
     server_configs = _resolve_server_configs(req.connectedServers, req.tokens)
     history = [{"role": m.role, "content": m.content} for m in req.history]
+    write_conf = req.writeConfirmation.model_dump() if req.writeConfirmation else None
     try:
-        answer, sources, tool_calls = await run_agent_loop(
+        answer, sources, tool_calls, awaiting = await run_agent_loop(
             question=req.question,
             system_prompt=TABLEAU_AGENT_SYSTEM_PROMPT,
             server_configs=server_configs,
             provider=req.provider,
             model=req.model,
             history=history,
+            write_confirmation=write_conf,
         )
-        return AskResponse(answer=answer, sources=sources, tool_calls=tool_calls)
+        return AskResponse(answer=answer, sources=sources, tool_calls=tool_calls, awaitingConfirmation=awaiting)
     except Exception as e:
         logger.exception("Agent ask failed")
         raise HTTPException(status_code=500, detail=str(e))

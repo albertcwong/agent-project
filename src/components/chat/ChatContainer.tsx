@@ -12,8 +12,10 @@ interface ChatContainerProps {
   streamingContent?: string | null;
   streamingThought?: string | null;
   onSend: (content: string, model: string, provider: string) => Promise<void>;
+  onCancel?: () => void;
   onModelChange?: (model: string, provider: string) => void;
   disabled?: boolean;
+  sending?: boolean;
   agentMode?: boolean;
   onAgentModeChange?: (v: boolean) => void;
 }
@@ -25,8 +27,10 @@ export function ChatContainer({
   streamingContent,
   streamingThought,
   onSend,
+  onCancel,
   onModelChange,
   disabled,
+  sending,
   agentMode,
   onAgentModeChange,
 }: ChatContainerProps) {
@@ -36,10 +40,12 @@ export function ChatContainer({
       <ChatMessages messages={messages} streamingContent={streamingContent} streamingThought={streamingThought} />
       <ChatInput
         onSend={onSend}
+        onCancel={onCancel}
         onModelChange={onModelChange}
         agentMode={agentMode}
         onAgentModeChange={onAgentModeChange}
         disabled={disabled}
+        sending={sending}
       />
     </div>
   );

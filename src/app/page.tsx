@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useCallback, useEffect, Suspense } from "react";
+import { useState, useCallback, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useThreads } from "@/hooks/useThreads";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { ChatContainer } from "@/components/chat/ChatContainer";
-import { getConnectedMcpServers, getMcpTokens, getAgentStreaming } from "@/lib/threads";
+import { getConnectedMcpServers, getMcpTokens, getAgentStreaming, getWriteConfirmationScope, setWriteConfirmationScope } from "@/lib/threads";
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: "OpenAI",
@@ -60,9 +60,17 @@ function ChatPageContent() {
   };
 
   const [sending, setSending] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
   const [streamingThought, setStreamingThought] = useState<string | null>(null);
+  const [pendingConfirmation, setPendingConfirmation] = useState<{
+    action: { toolName: string; arguments: Record<string, unknown> };
+    correlationId: string;
+    question: string;
+    model: string;
+    provider: string;
+  } | null>(null);
 
   const handleSend = useCallback(async (
     content: string,
@@ -84,6 +92,7 @@ function ChatPageContent() {
         const history = thread.messages
           .filter((m) => m.role === "user" || m.role === "assistant")
           .map((m) => ({ role: m.role, content: m.content }));
+        const writeConf = getWriteConfirmationScope();
         const body = {
           question: content,
           model,
@@ -91,11 +100,15 @@ function ChatPageContent() {
           connectedServers: getConnectedMcpServers(),
           tokens: getMcpTokens(),
           history,
+          ...(writeConf && { writeConfirmation: writeConf }),
         };
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
         const res = await fetch(useStream ? "/api/agent/ask" : "/api/agent/ask/sync", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          signal: controller.signal,
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
@@ -108,6 +121,8 @@ function ChatPageContent() {
           let thoughtAcc = "";
           let textAcc = "";
           const appAcc: Array<{ resourceUri: string; toolName: string; result: string; serverId: string }> = [];
+          const downloadAcc: Array<{ filename: string; contentBase64: string }> = [];
+          let confirmData: { action: { toolName: string; arguments: Record<string, unknown> }; correlationId: string; question: string; model: string; provider: string } | null = null;
           const flush = () => {
             rafId = null;
             setStreamingThought(thoughtAcc || null);
@@ -128,6 +143,8 @@ function ChatPageContent() {
                     if (obj.type === "thought") thoughtAcc += (thoughtAcc ? "\n\n" : "") + (obj.content ?? "");
                     else if (obj.type === "text") textAcc += obj.content ?? "";
                     else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
+                    else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
+                    else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider };
                     else if (obj.type === "done") { /* meta available if needed */ }
                   } catch {
                     // skip malformed lines
@@ -141,21 +158,29 @@ function ChatPageContent() {
                   if (obj.type === "thought") thoughtAcc += obj.content ?? "";
                   else if (obj.type === "text") textAcc += obj.content ?? "";
                   else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
+                  else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
+                  else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider };
                 } catch { /* skip */ }
               }
             }
           } catch (streamErr) {
+            if ((streamErr as Error)?.name === "AbortError") return;
             throw new Error(streamErr instanceof Error ? streamErr.message : "Stream failed");
           }
-          const content = textAcc.trim() || (thoughtAcc.trim() ? thoughtAcc.trim() : null) || (appAcc.length ? "Results:" : null);
-          if (!content) {
+          if (confirmData) {
+            setPendingConfirmation(confirmData);
+            return;
+          }
+          const finalContent = textAcc.trim() || (thoughtAcc.trim() ? thoughtAcc.trim() : null) || (appAcc.length ? "Results:" : null) || (downloadAcc.length ? "Downloaded files:" : null);
+          if (!finalContent) {
             throw new Error("No response from agent. The provider may not support tool calling (try OpenAI).");
           }
           appendMessages(thread.id, [{
             role: "assistant",
-            content,
+            content: finalContent,
             ...(thoughtAcc.trim() ? { thought: thoughtAcc.trim() } : {}),
             ...(appAcc.length ? { apps: appAcc } : {}),
+            ...(downloadAcc.length ? { downloads: downloadAcc } : {}),
           }]);
         } else {
           const data = await res.json().catch(() => ({}));
@@ -166,6 +191,8 @@ function ChatPageContent() {
           appendMessages(thread.id, [{ role: "assistant", content: answer }]);
         }
       } else {
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
         const messages = [
           ...thread.messages,
           { role: "user" as const, content },
@@ -174,6 +201,7 @@ function ChatPageContent() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ messages, model, provider }),
+          signal: controller.signal,
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
@@ -200,6 +228,7 @@ function ChatPageContent() {
         appendMessages(thread.id, [{ role: "assistant", content: full }]);
       }
     } catch (err) {
+      if ((err as Error)?.name === "AbortError") return;
       appendMessages(thread.id, [
         {
           role: "assistant",
@@ -207,12 +236,110 @@ function ChatPageContent() {
         },
       ]);
     } finally {
+      abortControllerRef.current = null;
       setSending(false);
       setStreamingContent(null);
       setStreamingThought(null);
       if (typeof rafId === "number") cancelAnimationFrame(rafId);
     }
   }, [activeThread, create, appendMessages, agentMode]);
+
+  const handleConfirmWrite = useCallback(async (scope: "once" | "session" | "forever") => {
+    const pending = pendingConfirmation;
+    if (!pending || !activeThread) return;
+    setPendingConfirmation(null);
+    if (scope !== "once") setWriteConfirmationScope(scope);
+    setSending(true);
+    setStreamingContent("");
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    let rafId: number | null = null;
+    const history = activeThread.messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((m) => ({ role: m.role, content: m.content }));
+    const body = {
+      question: pending.question,
+      model: pending.model,
+      provider: pending.provider,
+      connectedServers: getConnectedMcpServers(),
+      tokens: getMcpTokens(),
+      history,
+      writeConfirmation: { scope },
+    };
+    try {
+      const res = await fetch("/api/agent/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error("Retry failed");
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let thoughtAcc = "";
+      let textAcc = "";
+      const appAcc: Array<{ resourceUri: string; toolName: string; result: string; serverId: string }> = [];
+      const downloadAcc: Array<{ filename: string; contentBase64: string }> = [];
+      const flush = () => {
+        rafId = null;
+        setStreamingThought(thoughtAcc || null);
+        setStreamingContent(textAcc || null);
+      };
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const obj = JSON.parse(line);
+              if (obj.type === "thought") thoughtAcc += (thoughtAcc ? "\n\n" : "") + (obj.content ?? "");
+              else if (obj.type === "text") textAcc += obj.content ?? "";
+              else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
+              else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
+            } catch { /* skip */ }
+            if (rafId === null) rafId = requestAnimationFrame(flush);
+          }
+        }
+        for (const line of buffer.split("\n").filter(Boolean)) {
+          try {
+            const obj = JSON.parse(line);
+            if (obj.type === "thought") thoughtAcc += obj.content ?? "";
+            else if (obj.type === "text") textAcc += obj.content ?? "";
+            else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
+            else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
+          } catch { /* skip */ }
+        }
+      }
+      const content = textAcc.trim() || (thoughtAcc.trim() ? thoughtAcc.trim() : null) || (appAcc.length ? "Results:" : null) || (downloadAcc.length ? "Downloaded files:" : null);
+      if (content) {
+        appendMessages(activeThread.id, [{
+          role: "assistant",
+          content,
+          ...(thoughtAcc.trim() ? { thought: thoughtAcc.trim() } : {}),
+          ...(appAcc.length ? { apps: appAcc } : {}),
+          ...(downloadAcc.length ? { downloads: downloadAcc } : {}),
+        }]);
+      }
+    } catch (err) {
+      if ((err as Error)?.name === "AbortError") return;
+      appendMessages(activeThread.id, [{ role: "assistant", content: `Error: ${err instanceof Error ? err.message : "Retry failed"}` }]);
+    } finally {
+      abortControllerRef.current = null;
+      setSending(false);
+      setStreamingContent(null);
+      setStreamingThought(null);
+      if (typeof rafId === "number") cancelAnimationFrame(rafId);
+    }
+  }, [pendingConfirmation, activeThread, appendMessages]);
+
+  const handleCancelSend = useCallback(() => {
+    abortControllerRef.current?.abort();
+  }, []);
 
   const sidebarThreads = threads.map((t) => ({
     id: t.id,
@@ -223,6 +350,46 @@ function ChatPageContent() {
 
   return (
     <div className="flex h-screen flex-col">
+      {pendingConfirmation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="mx-4 max-w-md rounded-lg border bg-background p-6 shadow-lg">
+            <h3 className="mb-2 text-lg font-semibold">Confirm write operation</h3>
+            <p className="mb-4 text-sm text-muted-foreground">
+              About to run: {pendingConfirmation.action.toolName}
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => handleConfirmWrite("once")}
+                className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                Once
+              </button>
+              <button
+                type="button"
+                onClick={() => handleConfirmWrite("session")}
+                className="rounded-md border bg-background px-4 py-2 text-sm font-medium hover:bg-muted"
+              >
+                This session
+              </button>
+              <button
+                type="button"
+                onClick={() => handleConfirmWrite("forever")}
+                className="rounded-md border bg-background px-4 py-2 text-sm font-medium hover:bg-muted"
+              >
+                Forever
+              </button>
+              <button
+                type="button"
+                onClick={() => setPendingConfirmation(null)}
+                className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {oauthError && (
         <div className="flex items-center justify-between gap-4 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive">
           <span>{oauthError}</span>
@@ -249,10 +416,12 @@ function ChatPageContent() {
             streamingContent={streamingContent}
             streamingThought={streamingThought}
             onSend={handleSend}
+            onCancel={handleCancelSend}
             onModelChange={(id, provider) =>
               setSelectedModel(`${id} (${PROVIDER_LABELS[provider] || provider})`)
             }
             disabled={sending}
+            sending={sending}
             agentMode={agentMode}
             onAgentModeChange={setAgentMode}
           />
