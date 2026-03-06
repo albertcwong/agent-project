@@ -24,8 +24,8 @@ export function ModelReload() {
   return (
     <div className="flex items-center justify-between">
       <div>
-        <p className="font-medium">Models</p>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-label">Models</p>
+        <p className="text-caption">
           Reload if models were unavailable (e.g. before VPN)
         </p>
       </div>

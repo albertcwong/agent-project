@@ -2,16 +2,20 @@
 
 import { ChatHeader } from "./ChatHeader";
 import { ChatMessages } from "./ChatMessages";
-import { ChatInput } from "./ChatInput";
+import { ChatInput, type Attachment } from "./ChatInput";
 import type { ChatMessage } from "@/lib/threads";
 
 interface ChatContainerProps {
   title: string;
   modelName: string;
   messages: ChatMessage[];
+  threadId?: string | null;
+  pinned?: boolean;
+  onPin?: (id: string) => void;
+  onRename?: (id: string, currentTitle: string) => void;
   streamingContent?: string | null;
   streamingThought?: string | null;
-  onSend: (content: string, model: string, provider: string) => Promise<void>;
+  onSend: (content: string, model: string, provider: string, attachments?: Attachment[]) => Promise<void>;
   onCancel?: () => void;
   onModelChange?: (model: string, provider: string) => void;
   disabled?: boolean;
@@ -24,6 +28,10 @@ export function ChatContainer({
   title,
   modelName,
   messages,
+  threadId,
+  pinned,
+  onPin,
+  onRename,
   streamingContent,
   streamingThought,
   onSend,
@@ -36,9 +44,11 @@ export function ChatContainer({
 }: ChatContainerProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <ChatHeader modelName={modelName} title={title} />
-      <ChatMessages messages={messages} streamingContent={streamingContent} streamingThought={streamingThought} />
-      <ChatInput
+      <ChatHeader modelName={modelName} title={title} threadId={threadId} pinned={pinned} onPin={onPin} onRename={onRename} />
+      <div className="flex min-h-0 flex-1 flex-col bg-[var(--message-bar-area-bg)]">
+        <ChatMessages messages={messages} streamingContent={streamingContent} streamingThought={streamingThought} />
+        <div className="shrink-0 p-4">
+        <ChatInput
         onSend={onSend}
         onCancel={onCancel}
         onModelChange={onModelChange}
@@ -47,6 +57,8 @@ export function ChatContainer({
         disabled={disabled}
         sending={sending}
       />
+        </div>
+      </div>
     </div>
   );
 }

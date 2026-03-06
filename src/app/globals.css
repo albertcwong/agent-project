@@ -49,6 +49,12 @@
 
 :root {
   --radius: 0.625rem;
+  --message-bar-bg: oklch(1 0 0);
+  --message-bar-shadow: 0 1px 3px oklch(0 0 0 / 0.08);
+  --message-bar-border: oklch(0.88 0 0);
+  --message-bar-radius: 1.25rem;
+  --message-bar-area-bg: var(--background);
+  --message-bar-icon: oklch(0.6 0 0);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -83,6 +89,9 @@
 }
 
 .dark {
+  --message-bar-bg: oklch(0.205 0 0);
+  --message-bar-border: oklch(1 0 0 / 18%);
+  --message-bar-area-bg: var(--background);
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
@@ -123,6 +132,33 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* Typography scale */
+.text-body {
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+.text-body-sm {
+  font-size: 0.8125rem;
+  font-weight: 400;
+}
+.text-caption {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+.text-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+.text-heading {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+.text-heading-sm {
+  font-size: 1rem;
+  font-weight: 600;
 }
 
 /* Markdown table spacing for readability */

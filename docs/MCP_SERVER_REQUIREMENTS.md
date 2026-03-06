@@ -6,6 +6,20 @@
 
 ---
 
+## Python Analytics (Built-in)
+
+The agent includes a built-in `execute_python` tool for advanced analytics (forecasting, anomaly detection, statistical tests, clustering, custom aggregations). No external MCP server is required.
+
+**Workflow:** 1) Use `query-datasource` or `get-view-data` to fetch rows; 2) Call `execute_python` with `code` and `data: { "dataset_name": rows }`.
+
+**Schema:**
+- `code` (required): Python code. Use the `data` dict for input datasets.
+- `data` (optional): Named datasets from query results, e.g. `{"sales": [{"Month":"2023-01","Sales":10000}]}`.
+
+The executor runs in a subprocess with timeout (60s) and supports pandas, numpy, scipy, statsmodels, scikit-learn. Set `result = ...` in code to return structured output.
+
+---
+
 ## Overview
 
 The agent needs the following tools to support:
@@ -153,6 +167,8 @@ List projects on the site. Supports recursive project discovery.
 | `limit` | number | No | Max results |
 
 **REST**: Projects API or `search-content` with `contentTypes: ['project']`.
+
+**Response (project objects)**: For disambiguating projects with the same name, the agent builds a hierarchical path (e.g. "Sales / Finance"). Include `parentProjectId` (or `parentId`) in project objects so the agent can traverse parents. The Tableau REST API returns `parentProjectId`. Optionally include a computed `path` or `locationPath` field (e.g. "Sales / Finance") to avoid recursive lookups. If `get-project` is implemented, it should return a single project object with the same shape (`id`, `name`, `parentProjectId`).
 
 ---
 

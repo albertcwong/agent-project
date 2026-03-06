@@ -96,7 +96,7 @@ export function ModelSelector({ value, onChange }: ModelSelectorProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" disabled={loading}>
+        <Button variant="ghost" size="sm" disabled={loading} className="h-8 gap-1.5 text-caption hover:text-foreground">
           {loading ? "Loading..." : displayLabel}
           <ChevronDown className="ml-1 h-4 w-4" />
         </Button>

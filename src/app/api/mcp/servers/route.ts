@@ -12,9 +12,10 @@ export async function GET() {
     return NextResponse.json(data);
   } catch (err) {
     console.error("MCP servers proxy error:", err);
-    return NextResponse.json(
-      { servers: [], error: "Agent server unavailable" },
-      { status: 200 }
-    );
+    const msg =
+      err instanceof Error && (err.message === "Failed to fetch" || err.message === "fetch failed")
+        ? "Could not reach the agent. Is it running on port 8001? In Docker, set AGENT_API_URL=http://agent:8001."
+        : "Agent server unavailable";
+    return NextResponse.json({ servers: [], error: msg }, { status: 200 });
   }
 }

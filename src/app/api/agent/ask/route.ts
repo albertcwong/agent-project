@@ -29,12 +29,12 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     console.error("Agent API proxy error:", err);
-    return NextResponse.json(
-      {
-        error:
-          err instanceof Error ? err.message : "Agent request failed. Is the agent server running on port 8001?",
-      },
-      { status: 500 }
-    );
+    const msg =
+      err instanceof Error && (err.message === "Failed to fetch" || err.message === "fetch failed")
+        ? "Could not reach the agent. Is it running on port 8001? In Docker, set AGENT_API_URL=http://agent:8001."
+        : err instanceof Error
+          ? err.message
+          : "Agent request failed. Is the agent server running on port 8001?";
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

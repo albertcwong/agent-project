@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Agent Suite Chat",
+  title: "My Assistant",
   description: "Chat UI for LLM proxy",
   icons: { icon: "/favicon.svg" },
 };

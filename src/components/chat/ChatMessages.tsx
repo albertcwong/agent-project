@@ -20,6 +20,7 @@ interface Message {
   role: string;
   content: string;
   thought?: string;
+  toolCalls?: string[];
   apps?: McpApp[];
   downloads?: FileDownload[];
 }
@@ -61,8 +62,8 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
 
   if (messages.length === 0 && !streamingContent && !streamingThought) {
     return (
-      <div className="flex flex-1 items-center justify-center text-muted-foreground">
-        <p>Send a message to get started</p>
+      <div className="flex flex-1 items-center justify-center">
+        <p className="text-caption">Send a message to get started</p>
       </div>
     );
   }
@@ -91,18 +92,23 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
             </Avatar>
             <div
               className={cn(
-                "rounded-lg px-4 py-3 text-sm leading-relaxed",
+                "rounded-lg px-4 py-3 text-body leading-relaxed",
                 msg.role === "user" && "bg-muted"
               )}
             >
               {msg.role === "assistant" ? (
                 <>
+                  {msg.toolCalls && msg.toolCalls.length > 0 && (
+                    <p className="text-caption mb-2 text-muted-foreground">
+                      Tools used: {msg.toolCalls.join(", ")}
+                    </p>
+                  )}
                   {msg.thought && (
                     <details className="mb-3">
-                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
+                      <summary className="text-label cursor-pointer text-muted-foreground hover:text-foreground">
                         Thinking
                       </summary>
-                      <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-xs text-muted-foreground">
+                      <pre className="text-caption mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2">
                         {msg.thought}
                       </pre>
                     </details>
@@ -133,7 +139,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
                   ))}
                 </>
               ) : (
-                <p className="whitespace-pre-wrap">{sanitizeContent(msg.content)}</p>
+                <p className="text-body whitespace-pre-wrap">{sanitizeContent(msg.content)}</p>
               )}
             </div>
           </div>
@@ -143,13 +149,13 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
             <Avatar className="h-8 w-8 shrink-0">
               <AvatarFallback>A</AvatarFallback>
             </Avatar>
-            <div className="rounded-lg px-4 py-3 text-sm leading-relaxed">
+            <div className="rounded-lg px-4 py-3 text-body leading-relaxed">
               {streamingThought && (
-                <details className="mb-3">
-                  <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
+                <details className="mb-3" open={!!streamingThought}>
+                  <summary className="text-label cursor-pointer text-muted-foreground hover:text-foreground">
                     Thinking
                   </summary>
-                  <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-xs text-muted-foreground">
+                  <pre className="text-caption mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2">
                     {streamingThought}
                   </pre>
                 </details>

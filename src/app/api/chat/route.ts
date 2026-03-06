@@ -44,9 +44,12 @@ export async function POST(req: Request) {
     });
   } catch (err) {
     console.error("Chat API error:", err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Chat failed" },
-      { status: 500 }
-    );
+    const msg =
+      err instanceof Error && (err.message === "Failed to fetch" || err.message === "fetch failed")
+        ? "Could not reach the LLM proxy. Check LLM_PROXY_URL (default http://localhost:8000). In Docker, use host.docker.internal."
+        : err instanceof Error
+          ? err.message
+          : "Chat failed";
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

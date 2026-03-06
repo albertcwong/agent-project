@@ -35,7 +35,9 @@ export async function POST(req: Request) {
       err instanceof Error
         ? err.name === "AbortError"
           ? "Connection timed out. Is the Agent API running? (npm run agent)"
-          : err.message
+          : err.message === "Failed to fetch" || err.message === "fetch failed"
+            ? "Could not reach the agent. Is it running on port 8001? In Docker, set AGENT_API_URL=http://agent:8001."
+            : err.message
         : "Connection check failed";
     return NextResponse.json({ error: msg }, { status: 500 });
   }

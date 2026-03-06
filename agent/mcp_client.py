@@ -1,4 +1,4 @@
-"""MCP client for Tableau MCP servers. Supports Streamable HTTP and stdio transports."""
+"""MCP client for Tableau MCP servers. Supports Streamable HTTP, SSE, and stdio transports."""
 
 import json
 import logging
@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 import httpx
 from mcp.client.session import ClientSession
+from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.shared._httpx_utils import create_mcp_http_client
@@ -16,6 +17,13 @@ logger = logging.getLogger(__name__)
 
 # Longer timeouts for MCP over Docker/host.docker.internal; Tableau MCP can be slow
 MCP_TIMEOUT = httpx.Timeout(60.0, read=300.0)
+
+
+def _use_sse_transport(url: str, cfg: dict) -> bool:
+    """Use SSE when url path contains /sse or transport is explicitly sse."""
+    if cfg.get("transport") == "sse":
+        return True
+    return "/sse" in (urlparse(url).path or "")
 
 
 @asynccontextmanager
@@ -31,10 +39,13 @@ async def mcp_session_pool(server_configs: list[dict]):
             if not url or urlparse(url).scheme not in ("http", "https"):
                 continue
             headers = {"Authorization": f"Bearer {token}"} if token else None
-            http_client = create_mcp_http_client(headers=headers, timeout=MCP_TIMEOUT)
-            stream_ctx = streamable_http_client(url, http_client=http_client)
-            http_entered = await http_client.__aenter__()
-            stack.append((http_client, None))
+            if _use_sse_transport(url, cfg):
+                stream_ctx = sse_client(url=url, headers=headers, timeout=MCP_TIMEOUT)
+            else:
+                http_client = create_mcp_http_client(headers=headers, timeout=MCP_TIMEOUT)
+                stream_ctx = streamable_http_client(url, http_client=http_client)
+                await http_client.__aenter__()
+                stack.append((http_client, None))
             streams = await stream_ctx.__aenter__()
             stack.append((stream_ctx, None))
             read_stream, write_stream = streams[0], streams[1]
@@ -106,10 +117,14 @@ async def _with_session(
         async with stdio_client(params) as (read_stream, write_stream):
             yield read_stream, write_stream
     elif url and urlparse(url).scheme in ("http", "https"):
-        http_client = create_mcp_http_client(headers=headers, timeout=MCP_TIMEOUT)
-        async with http_client:
-            async with streamable_http_client(url, http_client=http_client) as (read_stream, write_stream, _):
-                yield read_stream, write_stream
+        if "/sse" in (urlparse(url).path or ""):
+            async with sse_client(url=url, headers=headers, timeout=MCP_TIMEOUT) as streams:
+                yield streams[0], streams[1]
+        else:
+            http_client = create_mcp_http_client(headers=headers, timeout=MCP_TIMEOUT)
+            async with http_client:
+                async with streamable_http_client(url, http_client=http_client) as (read_stream, write_stream, _):
+                    yield read_stream, write_stream
     else:
         raise ValueError("Need url (http/https) or stdio command")
 
@@ -143,16 +158,16 @@ async def read_resource(
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
             result = await session.read_resource(uri)
-            if not result.contents:
-                return "", "text/html"
-            c = result.contents[0]
-            mime = getattr(c, "mimeType", None) or "text/html"
-            if hasattr(c, "text") and c.text:
-                return c.text, mime
-            if hasattr(c, "blob") and c.blob:
-                import base64
-                return base64.b64decode(c.blob).decode("utf-8", errors="replace"), mime
-            return "", mime
+    if not result.contents:
+        return "", "text/html"
+    c = result.contents[0]
+    mime = getattr(c, "mimeType", None) or "text/html"
+    if hasattr(c, "text") and c.text:
+        return c.text, mime
+    if hasattr(c, "blob") and c.blob:
+        import base64
+        return base64.b64decode(c.blob).decode("utf-8", errors="replace"), mime
+    return "", mime
 
 
 async def call_tool(

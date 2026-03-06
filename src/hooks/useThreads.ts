@@ -59,6 +59,12 @@ export function useThreads() {
     });
   }, [activeId]);
 
+  const togglePin = useCallback((id: string) => {
+    setThreads((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t))
+    );
+  }, []);
+
   const appendMessages = useCallback(
     (id: string, newMessages: ChatMessage[]) => {
       setThreads((prev) =>
@@ -77,14 +83,21 @@ export function useThreads() {
 
   const activeThread = threads.find((t) => t.id === activeId) ?? null;
 
+  const sortedThreads = [...threads].sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return b.createdAt - a.createdAt;
+  });
+
   return {
-    threads,
+    threads: sortedThreads,
     activeId,
     activeThread,
     setActive,
     create,
     updateTitle,
     remove,
+    togglePin,
     appendMessages,
   };
 }

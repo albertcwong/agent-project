@@ -19,7 +19,7 @@ export function StreamingToggle() {
 
   return (
     <div className="flex items-center justify-between">
-      <label htmlFor="streaming-toggle" className="cursor-pointer text-sm font-medium">
+      <label htmlFor="streaming-toggle" className="text-label cursor-pointer">
         Stream agent responses
       </label>
       <button

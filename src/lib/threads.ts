@@ -14,6 +14,7 @@ export interface ChatMessage {
   role: string;
   content: string;
   thought?: string;
+  toolCalls?: string[];
   apps?: McpApp[];
   downloads?: FileDownload[];
 }
@@ -23,6 +24,7 @@ export interface Thread {
   title: string;
   messages: ChatMessage[];
   createdAt: number;
+  pinned?: boolean;
 }
 
 const STORAGE_KEY = "chat-threads";

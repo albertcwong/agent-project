@@ -41,6 +41,26 @@ WRITE_TOOLS = {
     "publish-flow",
 }
 
+# Built-in Python execution (not from MCP)
+EXECUTE_PYTHON_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "execute_python",
+        "description": "Run Python code against provided datasets in a sandbox. Use after query-datasource or get-view-data to analyze, forecast, or transform data.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Python code. Use the `data` dict for input datasets."},
+                "data": {
+                    "type": "object",
+                    "description": "Named datasets from query results. E.g. {\"sales\": [{\"Month\":\"2023-01\",\"Sales\":10000}]}",
+                },
+            },
+            "required": ["code"],
+        },
+    },
+}
+
 
 def _mcp_to_openai_tool(mcp_tool: dict) -> dict:
     """Convert a single MCP Tool to OpenAI function tool format."""
@@ -118,6 +138,10 @@ async def get_tools_for_servers(
     tools = []
     tool_ui_map: dict[str, dict] = {}
     tool_server_map: dict[str, dict] = {}
+    # Built-in execute_python (no MCP server)
+    tools.append(EXECUTE_PYTHON_TOOL)
+    seen.add("execute_python")
+    tool_server_map["execute_python"] = {"id": "__builtin__", "url": ""}
     for cfg in server_configs:
         url = cfg.get("url")
         server_id = cfg.get("id", url or "")
@@ -128,7 +152,8 @@ async def get_tools_for_servers(
                 mcp_tools = await pool["list_tools"](server_id)
             else:
                 mcp_tools = await list_tools(url=url, token=cfg.get("token"))
-            oai_tools, ui_map = mcp_tools_to_openai(mcp_tools, filter_names=REQUIRED_TOOLS)
+            filter_names = None if cfg.get("includeAllTools") else REQUIRED_TOOLS
+            oai_tools, ui_map = mcp_tools_to_openai(mcp_tools, filter_names=filter_names)
             for t in oai_tools:
                 name = t["function"]["name"]
                 if name not in seen:

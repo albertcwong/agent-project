@@ -112,7 +112,7 @@ export function ConnectedMcpServers() {
 
   if (servers.length === 0) {
     return (
-      <div className="rounded-lg border p-4 text-sm text-muted-foreground">
+      <div className="rounded-lg border p-4 text-body text-muted-foreground">
         No MCP servers configured. Set TABLEAU_MCP_SERVERS in your environment.
       </div>
     );
@@ -120,7 +120,7 @@ export function ConnectedMcpServers() {
 
   return (
     <div className="space-y-3">
-      <h3 className="font-medium">Connected MCP Servers</h3>
+      <h3 className="text-heading-sm">Connected MCP Servers</h3>
       <ul className="space-y-2">
         {servers.map((s) => (
           <li
@@ -128,18 +128,18 @@ export function ConnectedMcpServers() {
             className="flex flex-col gap-2 rounded-lg border border-border bg-background p-3"
           >
             <div className="min-w-0">
-              <span className="font-medium">{s.name}</span>
-              <span className="ml-2 truncate text-xs text-muted-foreground">
+              <span className="text-label">{s.name}</span>
+              <span className="text-caption ml-2 truncate">
                 {s.url}
               </span>
               {error[s.id] && (
-                <p className="mt-1 text-xs text-destructive">{error[s.id]}</p>
+                <p className="text-caption mt-1 text-destructive">{error[s.id]}</p>
               )}
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {connected.has(s.id) ? (
                 <>
-                  <span className="text-xs text-green-600">Connected</span>
+                  <span className="text-caption text-green-600">Connected</span>
                   <Button
                     variant="outline"
                     size="sm"

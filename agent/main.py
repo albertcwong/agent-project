@@ -15,7 +15,7 @@ from agent.routes import mcp_router, router
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Agent Suite", version="0.1.0")
+app = FastAPI(title="My Assistant", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(router)
 app.include_router(mcp_router)

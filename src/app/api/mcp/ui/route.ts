@@ -21,8 +21,9 @@ export async function GET(req: Request) {
     const res = await fetch(url.toString());
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
+      const errMsg = data.detail || data.error || res.statusText;
       return NextResponse.json(
-        { error: data.detail || data.error || res.statusText },
+        { error: errMsg },
         { status: res.status }
       );
     }

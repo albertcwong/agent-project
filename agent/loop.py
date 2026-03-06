@@ -12,6 +12,7 @@ from openai import AsyncOpenAI
 STREAM_READ_TIMEOUT = float(os.environ.get("LLM_STREAM_READ_TIMEOUT", "300"))
 
 from agent.mcp_client import mcp_session_pool
+from agent.python_exec import execute_python as run_execute_python
 from agent.tools import DOWNLOAD_TOOLS, WRITE_TOOLS, get_tools_for_servers
 
 logger = logging.getLogger(__name__)
@@ -57,12 +58,60 @@ def _result_has_chart_data(result: str, tool_name: str) -> bool:
         return len(s) > 50
 
 
+def _format_python_result(s: str) -> str:
+    """Format execute_python JSON output for the agent."""
+    if not s or s.startswith("Error:"):
+        return s or ""
+    try:
+        d = json.loads(s)
+        err = d.get("error")
+        if err:
+            return f"Error: {err}"
+        parts = []
+        if d.get("stdout"):
+            parts.append(d["stdout"].rstrip())
+        if "result" in d and d["result"] is not None:
+            parts.append(json.dumps(d["result"]) if not isinstance(d["result"], str) else d["result"])
+        return "\n".join(parts) if parts else s
+    except (json.JSONDecodeError, TypeError):
+        return s
+
+
 # Strip MCP SDK noise that can leak into tool results
 def _sanitize_tool_result(s: str) -> str:
     for pattern in ("unhandled errors in a TaskGroup", "BaseExceptionGroup:"):
         if pattern in s:
             s = s.split(pattern)[0].rstrip()
     return s
+
+
+def _tool_result_summary(name: str, result: str) -> str:
+    """Brief summary for status stream. E.g. 'query-datasource: 1247 rows'."""
+    if not result or result.strip().startswith("Error:"):
+        return "error"
+    try:
+        data = json.loads(result) if result.strip().startswith("{") else None
+        if not isinstance(data, dict):
+            return result[:50] + "..." if len(result) > 50 else result
+        if name in ("query-datasource", "get-view-data"):
+            arr = data.get("rows") or data.get("data") or []
+            n = len(arr) if isinstance(arr, list) else 0
+            return f"{n} rows"
+        if name == "get-datasource-metadata":
+            cols = data.get("columns") or []
+            n = len(cols) if isinstance(cols, list) else 0
+            return f"{n} columns"
+        if name == "execute_python":
+            return "complete" if not data.get("error") else "error"
+        if name in ("search-content", "list-datasources", "list-workbooks", "list-views", "list-projects", "list-flows"):
+            items = data.get("datasources") or data.get("workbooks") or data.get("views") or data.get("projects") or data.get("flows") or []
+            n = len(items) if isinstance(items, list) else 0
+            return f"{n} found"
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return result[:50] + "..." if len(result) > 50 else result
+
+
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "gpt-4")
 
 
@@ -213,6 +262,7 @@ async def run_agent_loop_stream(
                 except Exception: pass
                 # #endregion
                 clean = _sanitize_tool_result(result)
+                yield "thought", f"  → {name}: {_tool_result_summary(name, result)}"
                 # #region agent log
                 try:
                     open(DEBUG_LOG, "a").write(json.dumps({"sessionId":"45b476","hypothesisId":"H1,H2","location":"loop.py:clean_result","message":"after sanitize","data":{"clean":clean},"timestamp":__import__("time").time()*1000}) + "\n")
@@ -274,6 +324,7 @@ async def run_agent_loop_stream(
                 return
 
         for iteration in range(MAX_AGENT_ITERATIONS):
+            yield "thought", f"Step {iteration + 1}:"
             stream = await client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -383,17 +434,21 @@ async def run_agent_loop_stream(
                     return
 
                 args = _inject_attachments_in_args(args, attachments or [])
-                cfg = tool_server_map.get(name) or server_configs[0]
-                sid = cfg.get("id", cfg.get("url", ""))
-                try:
-                    result = await pool["call_tool"](sid, name, args)
-                except Exception:
-                    logger.exception("Tool %s failed", name)
-                    result = "Error: MCP server connection failed. Please try again."
+                if name == "execute_python":
+                    result = run_execute_python(args.get("code", ""), args.get("data"))
+                else:
+                    cfg = tool_server_map.get(name) or server_configs[0]
+                    sid = cfg.get("id", cfg.get("url", ""))
+                    try:
+                        result = await pool["call_tool"](sid, name, args)
+                    except Exception:
+                        logger.exception("Tool %s failed", name)
+                        result = "Error: MCP server connection failed. Please try again."
                 tool_results.append((name, result))
 
             for tc, (name, result) in zip(msg_tool_calls, tool_results):
-                clean = _sanitize_tool_result(result)
+                clean = _format_python_result(result) if name == "execute_python" else _sanitize_tool_result(result)
+                yield "thought", f"  → {name}: {_tool_result_summary(name, result)}"
                 if name in DOWNLOAD_TOOLS:
                     try:
                         parsed = json.loads(clean)
@@ -546,17 +601,21 @@ async def run_agent_loop(
                     )
 
                 args = _inject_attachments_in_args(args, attachments or [])
-                cfg = tool_server_map.get(name) or server_configs[0]
-                sid = cfg.get("id", cfg.get("url", ""))
-                try:
-                    result = await pool["call_tool"](sid, name, args)
-                except Exception:
-                    logger.exception("Tool %s failed", name)
-                    result = "Error: MCP server connection failed. Please try again."
+                if name == "execute_python":
+                    result = run_execute_python(args.get("code", ""), args.get("data"))
+                else:
+                    cfg = tool_server_map.get(name) or server_configs[0]
+                    sid = cfg.get("id", cfg.get("url", ""))
+                    try:
+                        result = await pool["call_tool"](sid, name, args)
+                    except Exception:
+                        logger.exception("Tool %s failed", name)
+                        result = "Error: MCP server connection failed. Please try again."
                 tool_results.append((name, result))
 
             for tc, (name, result) in zip(msg.tool_calls, tool_results):
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                content = _format_python_result(result) if name == "execute_python" else _sanitize_tool_result(result)
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
 
     return (
         "Maximum iterations reached. The question may be too complex or the tools did not return enough information.",

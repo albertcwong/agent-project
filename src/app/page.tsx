@@ -184,6 +184,7 @@ function ChatPageContent() {
           let buffer = "";
           let thoughtAcc = "";
           let textAcc = "";
+          let toolCallsAcc: string[] = [];
           const appAcc: Array<{ resourceUri: string; toolName: string; result: string; serverId: string }> = [];
           const downloadAcc: Array<{ filename: string; contentBase64: string }> = [];
           let confirmData: { action: { toolName: string; arguments: Record<string, unknown> }; correlationId: string; question: string; model: string; provider: string; attachments?: { filename: string; contentBase64: string }[] } | null = null;
@@ -209,7 +210,7 @@ function ChatPageContent() {
                     else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
                     else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
                     else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider, attachments };
-                    else if (obj.type === "done") { /* meta available if needed */ }
+                    else if (obj.type === "done" && obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
                   } catch {
                     // skip malformed lines
                   }
@@ -224,6 +225,7 @@ function ChatPageContent() {
                   else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
                   else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
                   else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider, attachments };
+                  else if (obj.type === "done" && obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
                 } catch { /* skip */ }
               }
             }
@@ -243,6 +245,7 @@ function ChatPageContent() {
             role: "assistant",
             content: finalContent,
             ...(thoughtAcc.trim() ? { thought: thoughtAcc.trim() } : {}),
+            ...(toolCallsAcc.length ? { toolCalls: toolCallsAcc } : {}),
             ...(appAcc.length ? { apps: appAcc } : {}),
             ...(downloadAcc.length ? { downloads: downloadAcc } : {}),
           }]);
@@ -345,6 +348,7 @@ function ChatPageContent() {
       let buffer = "";
       let thoughtAcc = "";
       let textAcc = "";
+      let toolCallsAcc: string[] = [];
       const appAcc: Array<{ resourceUri: string; toolName: string; result: string; serverId: string }> = [];
       const downloadAcc: Array<{ filename: string; contentBase64: string }> = [];
       const flush = () => {
@@ -367,6 +371,7 @@ function ChatPageContent() {
               else if (obj.type === "text") textAcc += obj.content ?? "";
               else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
               else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
+              else if (obj.type === "done" && obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
             } catch { /* skip */ }
             if (rafId === null) rafId = requestAnimationFrame(flush);
           }
@@ -378,6 +383,7 @@ function ChatPageContent() {
             else if (obj.type === "text") textAcc += obj.content ?? "";
             else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
             else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
+            else if (obj.type === "done" && obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
           } catch { /* skip */ }
         }
       }
@@ -387,6 +393,7 @@ function ChatPageContent() {
           role: "assistant",
           content,
           ...(thoughtAcc.trim() ? { thought: thoughtAcc.trim() } : {}),
+          ...(toolCallsAcc.length ? { toolCalls: toolCallsAcc } : {}),
           ...(appAcc.length ? { apps: appAcc } : {}),
           ...(downloadAcc.length ? { downloads: downloadAcc } : {}),
         }]);
