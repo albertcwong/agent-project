@@ -26,8 +26,18 @@ class HistoryMessage(BaseModel):
     content: str
 
 
+class Attachment(BaseModel):
+    filename: str
+    contentBase64: str
+
+
 class WriteConfirmation(BaseModel):
     scope: str  # "once" | "session" | "forever"
+
+
+class ConfirmedAction(BaseModel):
+    toolName: str
+    arguments: dict = {}
 
 
 class AskRequest(BaseModel):
@@ -38,6 +48,8 @@ class AskRequest(BaseModel):
     model: str | None = None
     history: list[HistoryMessage] = []
     writeConfirmation: WriteConfirmation | None = None
+    confirmedAction: ConfirmedAction | None = None
+    attachments: list[Attachment] = []
 
 
 class AskResponse(BaseModel):
@@ -67,10 +79,14 @@ def _chunk_line(typ: str, content: str) -> str:
 
 
 async def _stream_agent(req: AskRequest):
+    sent_done = False
+
     try:
         server_configs = _resolve_server_configs(req.connectedServers, req.tokens)
         history = [{"role": m.role, "content": m.content} for m in req.history]
         write_conf = req.writeConfirmation.model_dump() if req.writeConfirmation else None
+        confirmed = req.confirmedAction.model_dump() if req.confirmedAction else None
+        attachments = [{"filename": a.filename, "contentBase64": a.contentBase64} for a in req.attachments]
         async for kind, data in run_agent_loop_stream(
             question=req.question,
             system_prompt=TABLEAU_AGENT_SYSTEM_PROMPT,
@@ -79,6 +95,8 @@ async def _stream_agent(req: AskRequest):
             model=req.model,
             history=history,
             write_confirmation=write_conf,
+            confirmed_action=confirmed,
+            attachments=attachments,
         ):
             if kind == "thought":
                 yield _chunk_line("thought", data)
@@ -91,10 +109,15 @@ async def _stream_agent(req: AskRequest):
             elif kind == "download":
                 yield json.dumps({"type": "download", "download": data}) + "\n"
             elif kind == "done":
+                sent_done = True
                 yield json.dumps({"type": "done", "meta": data}) + "\n"
+    except GeneratorExit:
+        raise
     except Exception:
         logger.exception("Agent stream failed")
-        yield _chunk_line("text", "Error: Something went wrong. Please try again.")
+        if not sent_done:
+            yield _chunk_line("text", "Error: Something went wrong. Please try again.")
+            yield json.dumps({"type": "done", "meta": {"sources": [], "tool_calls": []}}) + "\n"
 
 
 @router.post("/ask")
@@ -114,6 +137,8 @@ async def ask_sync(req: AskRequest):
     server_configs = _resolve_server_configs(req.connectedServers, req.tokens)
     history = [{"role": m.role, "content": m.content} for m in req.history]
     write_conf = req.writeConfirmation.model_dump() if req.writeConfirmation else None
+    confirmed = req.confirmedAction.model_dump() if req.confirmedAction else None
+    attachments = [{"filename": a.filename, "contentBase64": a.contentBase64} for a in req.attachments]
     try:
         answer, sources, tool_calls, awaiting = await run_agent_loop(
             question=req.question,
@@ -123,6 +148,8 @@ async def ask_sync(req: AskRequest):
             model=req.model,
             history=history,
             write_confirmation=write_conf,
+            confirmed_action=confirmed,
+            attachments=attachments,
         )
         return AskResponse(answer=answer, sources=sources, tool_calls=tool_calls, awaitingConfirmation=awaiting)
     except Exception as e:
@@ -184,9 +211,10 @@ async def get_ui_resource(uri: str = "", serverId: str = "", token: str | None =
         return Response(content=content, media_type=mime)
     except Exception as e:
         logger.warning("MCP read_resource failed for %s: %s", uri, e)
-        detail = str(e)
-        if getattr(e, "exceptions", None):
-            detail = str(e.exceptions[0])
+        def _root(ex):
+            sub = getattr(ex, "exceptions", ())
+            return _root(sub[0]) if sub else ex
+        detail = str(_root(e))
         raise HTTPException(status_code=502, detail=detail)
 
 

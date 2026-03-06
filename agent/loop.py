@@ -16,6 +16,7 @@ from agent.tools import DOWNLOAD_TOOLS, WRITE_TOOLS, get_tools_for_servers
 
 logger = logging.getLogger(__name__)
 
+DEBUG_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug-45b476.log")
 MAX_AGENT_ITERATIONS = int(os.environ.get("MAX_AGENT_ITERATIONS", "10"))
 
 # Tools that return chartable data; metadata-only tools (e.g. get-datasource-metadata) excluded
@@ -65,6 +66,81 @@ def _sanitize_tool_result(s: str) -> str:
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "gpt-4")
 
 
+def _get_project_from_result(result: str) -> dict | None:
+    """Parse MCP tool result into a project dict. Returns None on failure."""
+    if not result or result.strip().startswith("Error:"):
+        return None
+    try:
+        data = json.loads(result) if result.strip().startswith("{") else None
+        if isinstance(data, dict) and (data.get("name") or data.get("projectName")):
+            return data
+        if isinstance(data, dict) and "projects" in data:
+            projs = data.get("projects") or []
+            if projs and isinstance(projs[0], dict):
+                return projs[0]
+    except Exception:
+        pass
+    return None
+
+
+async def _resolve_project_name(pool: dict, sid: str, project_id: str) -> str | None:
+    """Try to resolve projectId to project name via MCP. Returns None on failure."""
+    for tool_name, tool_args in [
+        ("get-project", {"projectId": project_id}),
+        ("list-projects", {"filter": f"id:eq:{project_id}", "limit": 1}),
+    ]:
+        try:
+            result = await pool["call_tool"](sid, tool_name, tool_args)
+            proj = _get_project_from_result(result)
+            if proj:
+                return proj.get("name") or proj.get("projectName")
+        except Exception:
+            continue
+    return None
+
+
+async def _resolve_project_path(pool: dict, sid: str, project_id: str, seen: set | None = None) -> str | None:
+    """Resolve projectId to full hierarchical path (e.g. 'Sales / Finance') via MCP. Returns None on failure."""
+    seen = seen or set()
+    if project_id in seen:
+        return None
+    seen.add(project_id)
+    for tool_name, tool_args in [
+        ("get-project", {"projectId": project_id}),
+        ("list-projects", {"filter": f"id:eq:{project_id}", "limit": 1}),
+    ]:
+        try:
+            result = await pool["call_tool"](sid, tool_name, tool_args)
+            proj = _get_project_from_result(result)
+            if not proj:
+                continue
+            name = proj.get("name") or proj.get("projectName") or ""
+            parent_id = proj.get("parentProjectId") or proj.get("parentId")
+            if parent_id:
+                parent_path = await _resolve_project_path(pool, sid, str(parent_id), seen)
+                return f"{parent_path} / {name}" if parent_path else name
+            return name or None
+        except Exception:
+            continue
+    return None
+
+
+def _inject_attachments_in_args(args: dict, attachments: list[dict]) -> dict:
+    """Replace ATTACHMENT_N placeholders in contentBase64 with actual content."""
+    if not attachments:
+        return args
+    content = args.get("contentBase64")
+    if not isinstance(content, str) and "uploadSessionId" not in args:
+        args = {**args, "contentBase64": "ATTACHMENT_0"}
+        content = "ATTACHMENT_0"
+    if not isinstance(content, str):
+        return args
+    for i, att in enumerate(attachments):
+        if content.strip() == f"ATTACHMENT_{i}":
+            return {**args, "contentBase64": att["contentBase64"]}
+    return args
+
+
 async def run_agent_loop_stream(
     question: str,
     system_prompt: str,
@@ -73,6 +149,8 @@ async def run_agent_loop_stream(
     model: str | None = None,
     history: list[dict] | None = None,
     write_confirmation: dict | None = None,
+    confirmed_action: dict | None = None,
+    attachments: list[dict] | None = None,
 ):
     """Async generator yielding (chunk_type, data). chunk_type: "thought" | "text" | "done". data: str for thought/text, dict for done."""
     if not server_configs:
@@ -102,10 +180,98 @@ async def run_agent_loop_stream(
             if m.get("role") in ("user", "assistant") and m.get("content"):
                 messages.append({"role": m["role"], "content": m["content"]})
         user_content = f"[Tableau is connected.] {question}" if server_configs and tools else question
+        if attachments:
+            names = ", ".join(a.get("filename", "file") for a in attachments)
+            user_content += f"\n\n[Attached file(s) for publishing: {names}. When calling publish-workbook, publish-datasource, or publish-flow, use contentBase64: 'ATTACHMENT_0' for the first file, 'ATTACHMENT_1' for the second, etc.]"
         messages.append({"role": "user", "content": user_content})
 
         tool_calls_log: list[dict] = []
         sources: list[dict] = []
+
+        if confirmed_action and write_confirmation:
+            # #region agent log
+            try:
+                open(DEBUG_LOG, "a").write(json.dumps({"sessionId":"45b476","hypothesisId":"H1,H5","location":"loop.py:confirmed_entry","message":"confirmed_action path","data":{"toolName":confirmed_action.get("toolName"),"hasWriteConf":bool(write_confirmation)},"timestamp":__import__("time").time()*1000}) + "\n")
+            except Exception: pass
+            # #endregion
+            name = confirmed_action.get("toolName") or ""
+            args = dict(confirmed_action.get("arguments") or {})
+            if name in WRITE_TOOLS:
+                args = _inject_attachments_in_args(args, attachments or [])
+                cfg = tool_server_map.get(name) or server_configs[0]
+                sid = cfg.get("id", cfg.get("url", ""))
+                tool_calls_log.append({"name": name, "arguments": args})
+                try:
+                    yield "thought", f"Using tool: {name}"
+                    result = await pool["call_tool"](sid, name, args)
+                except Exception:
+                    logger.exception("Tool %s failed", name)
+                    result = "Error: MCP server connection failed. Please try again."
+                # #region agent log
+                try:
+                    open(DEBUG_LOG, "a").write(json.dumps({"sessionId":"45b476","hypothesisId":"H1,H2,H4","location":"loop.py:tool_result","message":"raw result","data":{"result_len":len(str(result)),"result_preview":str(result)[:200]},"timestamp":__import__("time").time()*1000}) + "\n")
+                except Exception: pass
+                # #endregion
+                clean = _sanitize_tool_result(result)
+                # #region agent log
+                try:
+                    open(DEBUG_LOG, "a").write(json.dumps({"sessionId":"45b476","hypothesisId":"H1,H2","location":"loop.py:clean_result","message":"after sanitize","data":{"clean":clean},"timestamp":__import__("time").time()*1000}) + "\n")
+                except Exception: pass
+                # #endregion
+                if name in DOWNLOAD_TOOLS:
+                    try:
+                        parsed = json.loads(clean)
+                        if isinstance(parsed, dict) and "filename" in parsed and "contentBase64" in parsed:
+                            yield "download", {"filename": parsed["filename"], "contentBase64": parsed["contentBase64"]}
+                            clean = f'Downloaded: {parsed["filename"]}'
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                tc_id = f"call_{uuid.uuid4().hex[:12]}"
+                messages.append({"role": "assistant", "content": "", "tool_calls": [{"id": tc_id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]})
+                messages.append({"role": "tool", "tool_call_id": tc_id, "content": clean})
+                ui_meta = tool_ui_map.get(name)
+                if ui_meta and ui_meta.get("resourceUri") and _user_wants_chart(question) and _result_has_chart_data(clean, name):
+                    yield "app", {"resourceUri": ui_meta["resourceUri"], "toolName": name, "toolCallId": tc_id, "result": clean, "serverId": ui_meta.get("serverId", "")}
+                if clean.startswith("Error:"):
+                    # #region agent log
+                    try:
+                        open(DEBUG_LOG, "a").write(json.dumps({"sessionId":"45b476","hypothesisId":"H4","location":"loop.py:yield_branch","message":"error branch","data":{"yielding":"error"},"timestamp":__import__("time").time()*1000}) + "\n")
+                    except Exception: pass
+                    # #endregion
+                    msg = clean
+                    if "403" in clean:
+                        msg = "Publish failed: Access forbidden (403). Check your Tableau permissions and that you have publish rights to the project."
+                    elif ("contentBase64" in clean or "uploadSessionId" in clean) and "required" in clean.lower():
+                        msg = "Publish failed: A file is required. Attach a .twbx workbook (or .tdsx/.tflx) before publishing."
+                    yield "text", msg
+                else:
+                    try:
+                        meta = json.loads(clean)
+                        if isinstance(meta, dict) and (meta.get("id") or meta.get("name") or meta.get("contentUrl")):
+                            yield "text", f"Published successfully. {meta.get('name', '')} → project {meta.get('projectId', '')}"
+                        else:
+                            # No explicit success evidence; don't assume success
+                            # #region agent log
+                            try:
+                                open(DEBUG_LOG, "a").write(json.dumps({"sessionId":"45b476","hypothesisId":"H1","location":"loop.py:yield_branch","message":"empty/meta branch","data":{"meta_keys":list(meta.keys()) if isinstance(meta,dict) else None,"yielding":clean},"timestamp":__import__("time").time()*1000}) + "\n")
+                            except Exception: pass
+                            # #endregion
+                            if name in WRITE_TOOLS and (not meta or (isinstance(meta, dict) and not meta)):
+                                yield "text", "Publish returned no confirmation. Check Tableau Server to verify."
+                            else:
+                                yield "text", clean
+                    except (json.JSONDecodeError, TypeError):
+                        # #region agent log
+                        try:
+                            open(DEBUG_LOG, "a").write(json.dumps({"sessionId":"45b476","hypothesisId":"H2","location":"loop.py:yield_branch","message":"json parse fail","data":{"yielding":clean[:100]},"timestamp":__import__("time").time()*1000}) + "\n")
+                        except Exception: pass
+                        # #endregion
+                        if name in WRITE_TOOLS and clean.strip() in ("{}", ""):
+                            yield "text", "Publish returned no confirmation. Check Tableau Server to verify."
+                        else:
+                            yield "text", clean
+                yield "done", {"sources": sources, "tool_calls": tool_calls_log}
+                return
 
         for iteration in range(MAX_AGENT_ITERATIONS):
             stream = await client.chat.completions.create(
@@ -199,13 +365,24 @@ async def run_agent_loop_stream(
                 tool_calls_log.append({"name": name, "arguments": args})
 
                 if name in WRITE_TOOLS and not write_confirmation:
+                    confirm_args = dict(args)
+                    if project_id := confirm_args.get("projectId"):
+                        cfg = tool_server_map.get(name) or server_configs[0]
+                        sid = cfg.get("id", cfg.get("url", ""))
+                        if path := await _resolve_project_path(pool, sid, str(project_id)):
+                            confirm_args["projectPath"] = path
+                            if not confirm_args.get("projectName"):
+                                confirm_args["projectName"] = path.split(" / ")[-1] if " / " in path else path
+                        elif not confirm_args.get("projectName") and (name_res := await _resolve_project_name(pool, sid, str(project_id))):
+                            confirm_args["projectName"] = name_res
                     yield "confirm", {
-                        "action": {"toolName": name, "arguments": args},
+                        "action": {"toolName": name, "arguments": confirm_args},
                         "correlationId": str(uuid.uuid4()),
                     }
                     yield "done", {"sources": sources, "tool_calls": tool_calls_log, "awaitingConfirmation": True}
                     return
 
+                args = _inject_attachments_in_args(args, attachments or [])
                 cfg = tool_server_map.get(name) or server_configs[0]
                 sid = cfg.get("id", cfg.get("url", ""))
                 try:
@@ -248,6 +425,8 @@ async def run_agent_loop(
     model: str | None = None,
     history: list[dict] | None = None,
     write_confirmation: dict | None = None,
+    confirmed_action: dict | None = None,
+    attachments: list[dict] | None = None,
 ) -> tuple[str, list[dict], list[dict], bool]:
     """
     Run the agent loop. Returns (answer, sources, tool_calls).
@@ -286,10 +465,30 @@ async def run_agent_loop(
             if m.get("role") in ("user", "assistant") and m.get("content"):
                 messages.append({"role": m["role"], "content": m["content"]})
         user_content = f"[Tableau is connected.] {question}" if server_configs and tools else question
+        if attachments:
+            names = ", ".join(a.get("filename", "file") for a in attachments)
+            user_content += f"\n\n[Attached file(s) for publishing: {names}. When calling publish-workbook, publish-datasource, or publish-flow, use contentBase64: 'ATTACHMENT_0' for the first file, 'ATTACHMENT_1' for the second, etc.]"
         messages.append({"role": "user", "content": user_content})
 
         tool_calls_log: list[dict] = []
         sources: list[dict] = []
+
+        if confirmed_action and write_confirmation:
+            name = confirmed_action.get("toolName") or ""
+            args = dict(confirmed_action.get("arguments") or {})
+            if name in WRITE_TOOLS:
+                args = _inject_attachments_in_args(args, attachments or [])
+                cfg = tool_server_map.get(name) or server_configs[0]
+                sid = cfg.get("id", cfg.get("url", ""))
+                tool_calls_log.append({"name": name, "arguments": args})
+                try:
+                    result = await pool["call_tool"](sid, name, args)
+                except Exception:
+                    logger.exception("Tool %s failed", name)
+                    result = "Error: MCP server connection failed. Please try again."
+                tc_id = f"call_{uuid.uuid4().hex[:12]}"
+                messages.append({"role": "assistant", "content": "", "tool_calls": [{"id": tc_id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]})
+                messages.append({"role": "tool", "tool_call_id": tc_id, "content": result})
 
         for i in range(MAX_AGENT_ITERATIONS):
             resp = await client.chat.completions.create(
@@ -346,6 +545,7 @@ async def run_agent_loop(
                         True,
                     )
 
+                args = _inject_attachments_in_args(args, attachments or [])
                 cfg = tool_server_map.get(name) or server_configs[0]
                 sid = cfg.get("id", cfg.get("url", ""))
                 try:

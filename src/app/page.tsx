@@ -22,6 +22,71 @@ const OAUTH_ERROR_MSG: Record<string, string> = {
   no_token: "MCP did not return a token.",
 };
 
+const TOOL_LABELS: Record<string, string> = {
+  "publish-workbook": "Publish workbook",
+  "publish-datasource": "Publish datasource",
+  "publish-flow": "Publish flow",
+};
+
+function WriteConfirmDetails({ action, question }: { action: { toolName: string; arguments: Record<string, unknown> }; question?: string }) {
+  const { toolName, arguments: args } = action;
+  const label = TOOL_LABELS[toolName] ?? toolName;
+  const name = args.name as string | undefined;
+  const projectPath = args.projectPath as string | undefined;
+  const projectName = args.projectName as string | undefined;
+  const projectId = args.projectId as string | undefined;
+  const projectDisplay = projectPath ?? projectName ?? projectId;
+  const hasNameOrPath = projectPath != null || projectName != null;
+  const overwrite = args.overwrite as boolean | undefined;
+  const append = args.append as boolean | undefined;
+
+  return (
+    <div className="text-body mb-4 space-y-2 text-muted-foreground">
+      {question && (
+        <p className="text-sm">
+          <span className="font-medium text-foreground">Your request: </span>
+          {question}
+        </p>
+      )}
+      <p className="font-medium text-foreground">{label}</p>
+      <dl className="space-y-1 text-sm">
+        {name != null && (
+          <div>
+            <dt className="inline font-medium text-foreground">Name: </dt>
+            <dd className="inline">{name}</dd>
+          </div>
+        )}
+        {(projectDisplay != null || projectId != null) && (
+          <div>
+            <dt className="inline font-medium text-foreground">Project: </dt>
+            <dd className="inline">
+              {hasNameOrPath ? projectDisplay : null}
+              {hasNameOrPath && projectId && projectDisplay !== projectId && (
+                <span className="ml-1 text-xs text-muted-foreground">(ID: {projectId})</span>
+              )}
+              {!hasNameOrPath && projectId && (
+                <span className="text-xs text-muted-foreground">ID: {projectId}</span>
+              )}
+            </dd>
+          </div>
+        )}
+        {overwrite && (
+          <div>
+            <dt className="inline font-medium text-destructive">Overwrite: </dt>
+            <dd className="inline">Yes — existing content with the same name will be replaced</dd>
+          </div>
+        )}
+        {append && toolName === "publish-datasource" && (
+          <div>
+            <dt className="inline font-medium text-foreground">Append: </dt>
+            <dd className="inline">Yes — data will be appended to extract</dd>
+          </div>
+        )}
+      </dl>
+    </div>
+  );
+}
+
 function ChatPageContent() {
   const searchParams = useSearchParams();
   const [oauthError, setOauthError] = useState<string | null>(null);
@@ -42,7 +107,7 @@ function ChatPageContent() {
     setActive,
     create,
     updateTitle,
-    remove,
+    togglePin,
     appendMessages,
   } = useThreads();
 
@@ -53,10 +118,6 @@ function ChatPageContent() {
   const handleRenameThread = (id: string, currentTitle: string) => {
     const name = window.prompt("Rename chat", currentTitle);
     if (name != null && name.trim()) updateTitle(id, name.trim());
-  };
-
-  const handleDeleteThread = (id: string) => {
-    if (window.confirm("Delete this chat?")) remove(id);
   };
 
   const [sending, setSending] = useState(false);
@@ -70,12 +131,14 @@ function ChatPageContent() {
     question: string;
     model: string;
     provider: string;
+    attachments?: { filename: string; contentBase64: string }[];
   } | null>(null);
 
   const handleSend = useCallback(async (
     content: string,
     model: string,
-    provider: string
+    provider: string,
+    attachments?: { filename: string; contentBase64: string }[]
   ) => {
     let thread = activeThread;
     if (!thread) {
@@ -101,6 +164,7 @@ function ChatPageContent() {
           tokens: getMcpTokens(),
           history,
           ...(writeConf && { writeConfirmation: writeConf }),
+          ...(attachments?.length && { attachments }),
         };
         const controller = new AbortController();
         abortControllerRef.current = controller;
@@ -122,7 +186,7 @@ function ChatPageContent() {
           let textAcc = "";
           const appAcc: Array<{ resourceUri: string; toolName: string; result: string; serverId: string }> = [];
           const downloadAcc: Array<{ filename: string; contentBase64: string }> = [];
-          let confirmData: { action: { toolName: string; arguments: Record<string, unknown> }; correlationId: string; question: string; model: string; provider: string } | null = null;
+          let confirmData: { action: { toolName: string; arguments: Record<string, unknown> }; correlationId: string; question: string; model: string; provider: string; attachments?: { filename: string; contentBase64: string }[] } | null = null;
           const flush = () => {
             rafId = null;
             setStreamingThought(thoughtAcc || null);
@@ -144,7 +208,7 @@ function ChatPageContent() {
                     else if (obj.type === "text") textAcc += obj.content ?? "";
                     else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
                     else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
-                    else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider };
+                    else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider, attachments };
                     else if (obj.type === "done") { /* meta available if needed */ }
                   } catch {
                     // skip malformed lines
@@ -159,7 +223,7 @@ function ChatPageContent() {
                   else if (obj.type === "text") textAcc += obj.content ?? "";
                   else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
                   else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
-                  else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider };
+                  else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider, attachments };
                 } catch { /* skip */ }
               }
             }
@@ -265,6 +329,8 @@ function ChatPageContent() {
       tokens: getMcpTokens(),
       history,
       writeConfirmation: { scope },
+      confirmedAction: pending.action,
+      ...(pending.attachments?.length && { attachments: pending.attachments }),
     };
     try {
       const res = await fetch("/api/agent/ask", {
@@ -346,6 +412,7 @@ function ChatPageContent() {
     title: t.title,
     messages: t.messages,
     createdAt: t.createdAt,
+    pinned: t.pinned,
   }));
 
   return (
@@ -353,36 +420,34 @@ function ChatPageContent() {
       {pendingConfirmation && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="mx-4 max-w-md rounded-lg border bg-background p-6 shadow-lg">
-            <h3 className="mb-2 text-lg font-semibold">Confirm write operation</h3>
-            <p className="mb-4 text-sm text-muted-foreground">
-              About to run: {pendingConfirmation.action.toolName}
-            </p>
+            <h3 className="text-heading mb-2">Confirm write operation</h3>
+            <WriteConfirmDetails action={pendingConfirmation.action} question={pendingConfirmation.question} />
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={() => handleConfirmWrite("once")}
-                className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                className="text-body rounded-md bg-primary px-4 py-2 font-medium text-primary-foreground hover:bg-primary/90"
               >
                 Once
               </button>
               <button
                 type="button"
                 onClick={() => handleConfirmWrite("session")}
-                className="rounded-md border bg-background px-4 py-2 text-sm font-medium hover:bg-muted"
+                className="text-body rounded-md border bg-background px-4 py-2 font-medium hover:bg-muted"
               >
                 This session
               </button>
               <button
                 type="button"
                 onClick={() => handleConfirmWrite("forever")}
-                className="rounded-md border bg-background px-4 py-2 text-sm font-medium hover:bg-muted"
+                className="text-body rounded-md border bg-background px-4 py-2 font-medium hover:bg-muted"
               >
                 Forever
               </button>
               <button
                 type="button"
                 onClick={() => setPendingConfirmation(null)}
-                className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-muted"
+                className="text-body rounded-md border px-4 py-2 font-medium hover:bg-muted"
               >
                 Cancel
               </button>
@@ -405,7 +470,7 @@ function ChatPageContent() {
         onNewChat={handleNewChat}
         onSelectThread={setActive}
         onRenameThread={handleRenameThread}
-        onDeleteThread={handleDeleteThread}
+        onPinThread={togglePin}
       />
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {activeThread ? (
@@ -413,6 +478,10 @@ function ChatPageContent() {
             title={activeThread.title}
             modelName={selectedModel || "Select model"}
             messages={activeThread.messages}
+            threadId={activeThread.id}
+            pinned={activeThread.pinned}
+            onPin={togglePin}
+            onRename={handleRenameThread}
             streamingContent={streamingContent}
             streamingThought={streamingThought}
             onSend={handleSend}
@@ -426,11 +495,11 @@ function ChatPageContent() {
             onAgentModeChange={setAgentMode}
           />
         ) : (
-          <div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
-            <p>Start a new chat to begin</p>
+          <div className="flex flex-1 flex-col items-center justify-center gap-4">
+            <p className="text-caption">Start a new chat to begin</p>
             <button
               onClick={handleNewChat}
-              className="text-primary hover:underline"
+              className="text-body text-primary hover:underline"
             >
               New chat
             </button>
