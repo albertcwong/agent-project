@@ -1,0 +1,15 @@
+- id: "download_workbook"
+  question: "Download the Sales Analytics workbook"
+  category: "download"
+  expected:
+    tools_required: ["list-workbooks", "download-workbook"]
+    answer_must_not_contain: ["Error", "failed", "not found"]
+    max_iterations: 6
+
+- id: "inspect_datasource"
+  question: "Inspect the Sales Analytics datasource file"
+  category: "inspect"
+  expected:
+    tools_required: ["list-datasources", "inspect-datasource-file"]
+    answer_must_contain_any: ["connection", "field", "column", "sheet", "table"]
+    max_iterations: 8

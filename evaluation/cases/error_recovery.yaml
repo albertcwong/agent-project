@@ -1,0 +1,19 @@
+- id: "no_datasources_empty"
+  question: "Query the Empty datasource for total revenue"
+  category: "error_recovery"
+  expected:
+    tools_required_any: [["list-datasources", "search-content"]]
+    answer_must_not_contain: ["reconnect", "I cannot help"]
+    answer_must_contain_any: ["no data", "empty", "no results", "not found", "no datasource", "0 row"]
+    max_iterations: 8
+
+- id: "field_not_found_recovery"
+  question: "Show me total revenue by category"
+  category: "error_recovery"
+  scenario: "field_not_found_recovery"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    # min_tool_calls: 3  # Recovery path; agent may get it right on first try from metadata
+    answer_must_not_contain: ["Error", "field not found"]
+    answer_must_contain_any: ["category", "sales", "amount", "revenue"]
+    max_iterations: 10

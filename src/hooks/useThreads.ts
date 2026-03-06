@@ -7,6 +7,7 @@ import {
   generateId,
   type Thread,
   type ChatMessage,
+  type ConversationState,
 } from "@/lib/threads";
 
 export function useThreads() {
@@ -44,9 +45,24 @@ export function useThreads() {
   }, []);
 
   const updateTitle = useCallback((id: string, title: string) => {
-    setThreads((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, title } : t))
-    );
+    // #region agent log
+    setThreads((prev) => {
+      const found = prev.some((t) => t.id === id);
+      fetch("http://127.0.0.1:7597/ingest/a3c5ee10-7c43-4948-a3a4-7f0d0cdfa022", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "45b476" },
+        body: JSON.stringify({
+          sessionId: "45b476",
+          location: "useThreads.ts:updateTitle",
+          message: "updateTitle",
+          data: { id, title, found, threadCount: prev.length },
+          timestamp: Date.now(),
+          hypothesisId: "H4",
+        }),
+      }).catch(() => {});
+      return prev.map((t) => (t.id === id ? { ...t, title } : t));
+    });
+    // #endregion
   }, []);
 
   const remove = useCallback((id: string) => {
@@ -81,6 +97,12 @@ export function useThreads() {
     []
   );
 
+  const updateConversationState = useCallback((id: string, state: ConversationState | undefined) => {
+    setThreads((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, conversationState: state } : t))
+    );
+  }, []);
+
   const activeThread = threads.find((t) => t.id === activeId) ?? null;
 
   const sortedThreads = [...threads].sort((a, b) => {
@@ -99,5 +121,6 @@ export function useThreads() {
     remove,
     togglePin,
     appendMessages,
+    updateConversationState,
   };
 }

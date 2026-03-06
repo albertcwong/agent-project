@@ -1,0 +1,9 @@
+- id: "publish_workbook"
+  question: "Publish my workbook to the Finance project"
+  category: "publish"
+  attachments:
+    - filename: "report.twbx"
+      contentBase64: "UEsDBBQAAAAIAAEA"
+  expected:
+    tools_required: ["list-projects", "publish-workbook"]
+    max_iterations: 6

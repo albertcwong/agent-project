@@ -89,7 +89,7 @@ export function ChatInput({ onSend, onCancel, onModelChange, agentMode, onAgentM
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".twbx,.twb,.tdsx,.tflx,.tfl,.hyper"
+        accept=".twbx,.twb,.tdsx,.tflx,.tfl,.hyper,image/*,.txt,.csv,.json,.md,.log"
         className="hidden"
         onChange={handleFileChange}
       />

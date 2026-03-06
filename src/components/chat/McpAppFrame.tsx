@@ -79,13 +79,13 @@ export function McpAppFrame({ resourceUri, toolName, result, serverId }: McpAppF
   }, [html, result, serverId]);
 
   if (error) return <div className="rounded border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>;
-  if (!html) return <div className="h-[400px] animate-pulse rounded border bg-muted/50" />;
+  if (!html) return <div className="h-[min(400px,50vh)] min-h-[200px] animate-pulse rounded border bg-muted/50" />;
   return (
     <iframe
       ref={iframeRef}
       sandbox="allow-scripts"
       title={`MCP App: ${toolName}`}
-      className="h-[400px] w-full rounded border bg-background"
+      className="h-[min(400px,50vh)] min-h-[200px] w-full max-w-full rounded border bg-background"
     />
   );
 }

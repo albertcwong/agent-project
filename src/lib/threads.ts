@@ -20,12 +20,24 @@ export interface ChatMessage {
   downloads?: FileDownload[];
 }
 
+export interface ConversationState {
+  currentDatasourceId?: string;
+  lastQuery?: Record<string, unknown>;
+  establishedFilters?: Record<string, unknown>;
+  lastDownloadedObjects?: { id: string; name?: string; type: string }[];
+  targetProjectId?: string;
+  targetProjectName?: string;
+  lastInspectedObjectId?: string;
+  lastInspectedObjectType?: string;
+}
+
 export interface Thread {
   id: string;
   title: string;
   messages: ChatMessage[];
   createdAt: number;
   pinned?: boolean;
+  conversationState?: ConversationState;
 }
 
 const STORAGE_KEY = "chat-threads";

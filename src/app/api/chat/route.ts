@@ -3,9 +3,36 @@ import { NextResponse } from "next/server";
 
 export const maxDuration = 300;
 
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
+const TEXT_EXT = /\.(txt|csv|json|md|log)$/i;
+
+function buildUserContent(
+  text: string,
+  attachments?: { filename: string; contentBase64: string }[]
+): string | OpenAI.Chat.Completions.ChatCompletionContentPart[] {
+  if (!attachments?.length) return text;
+
+  const parts: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: "text", text }];
+  for (const a of attachments) {
+    const ext = a.filename.split(".").pop()?.toLowerCase() ?? "";
+    if (IMAGE_EXT.test(a.filename)) {
+      const mime = ext === "png" ? "image/png" : ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/jpeg";
+      parts.push({ type: "image_url", image_url: { url: `data:${mime};base64,${a.contentBase64}` } });
+    } else if (TEXT_EXT.test(a.filename)) {
+      try {
+        const decoded = Buffer.from(a.contentBase64, "base64").toString("utf-8");
+        parts.push({ type: "text", text: `\n\n[File: ${a.filename}]\n${decoded}` });
+      } catch {
+        parts.push({ type: "text", text: `\n\n[File: ${a.filename} - could not decode]` });
+      }
+    }
+  }
+  return parts;
+}
+
 export async function POST(req: Request) {
   try {
-    const { messages, model, provider } = await req.json();
+    const { messages, model, provider, attachments } = await req.json();
     const baseUrl = (process.env.LLM_PROXY_URL || "http://localhost:8000").replace(/\/$/, "");
     const apiKey = process.env.LLM_PROXY_API_KEY || "dummy";
     const defaultProvider = process.env.LLM_PROXY_PROVIDER || "openai";
@@ -16,11 +43,21 @@ export async function POST(req: Request) {
       defaultHeaders: { "x-provider": provider || defaultProvider },
     });
 
+    const filtered = (messages || []).filter((m: { role?: string; content?: string }) => m.role && m.content);
+    const lastUser = filtered.filter((m: { role?: string }) => m.role === "user").pop();
+    const processed = filtered.slice(0, -1);
+    if (lastUser && lastUser.role === "user") {
+      const content = buildUserContent(lastUser.content || "", attachments);
+      processed.push({ role: "user", content });
+    } else if (filtered.length) {
+      processed.push(...filtered.slice(-1));
+    }
+
     const stream = await client.chat.completions.create({
       model: model || "gpt-4",
       messages: [
         { role: "system", content: "Respond in a professional tone. Do not use emojis. Use clear, structured formatting." },
-        ...(messages || []).filter((m: { role?: string; content?: string }) => m.role && m.content),
+        ...processed,
       ],
       stream: true,
     });

@@ -1,0 +1,17 @@
+- id: "follow_up_breakdown"
+  question: "Break that down by quarter"
+  history:
+    - role: "user"
+      content: "Show me total sales by region"
+    - role: "assistant"
+      content: "Here are total sales by region: East $100k, West $150k, North $80k."
+  conversation_state:
+    currentDatasourceId: "ds-123"
+    lastQuery:
+      fields: [{"fieldCaption": "Region"}]
+      aggregation: "SUM"
+  expected:
+    tools_prohibited: ["list-datasources"]
+    query_must_contain:
+      fields: ["Quarter"]
+    max_iterations: 5

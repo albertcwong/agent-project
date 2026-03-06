@@ -103,7 +103,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
     if (!el || !viewport) return;
     const observer = new IntersectionObserver(
       ([entry]) => setIsAtBottom(entry.isIntersecting),
-      { root: viewport, rootMargin: "80px", threshold: 0 }
+      { root: viewport, rootMargin: "20px", threshold: 0 }
     );
     observer.observe(el);
     return () => observer.disconnect();

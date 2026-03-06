@@ -1,0 +1,8 @@
+- id: "forecast_sales"
+  question: "Forecast next quarter's sales based on historical data"
+  category: "query"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource", "execute_python"]
+    answer_must_contain_any: ["forecast", "predict", "trend", "projection"]
+    answer_must_not_contain: ["I cannot", "not possible"]
+    max_iterations: 10

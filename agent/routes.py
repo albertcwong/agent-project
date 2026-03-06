@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from agent.loop import run_agent_loop, run_agent_loop_stream
 from agent.mcp_client import call_tool, list_tools, read_resource
-from agent.prompts import TABLEAU_AGENT_SYSTEM_PROMPT
+from agent.prompts import get_system_prompt
 from agent.tools import get_servers_config, get_servers_for_api
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,12 @@ class ConfirmedAction(BaseModel):
     arguments: dict = {}
 
 
+class ConversationState(BaseModel):
+    currentDatasourceId: str | None = None
+    lastQuery: dict | None = None
+    establishedFilters: dict | None = None
+
+
 class AskRequest(BaseModel):
     question: str
     provider: str = "openai"
@@ -50,6 +56,8 @@ class AskRequest(BaseModel):
     writeConfirmation: WriteConfirmation | None = None
     confirmedAction: ConfirmedAction | None = None
     attachments: list[Attachment] = []
+    conversationState: ConversationState | None = None
+    traceId: str | None = None
 
 
 class AskResponse(BaseModel):
@@ -57,6 +65,7 @@ class AskResponse(BaseModel):
     sources: list[dict] = []
     tool_calls: list[dict] = []
     awaitingConfirmation: bool = False
+    conversationState: ConversationState | None = None
 
 
 def _resolve_server_configs(connected_ids: list[str], client_tokens: dict[str, str] | None = None) -> list[dict]:
@@ -87,9 +96,10 @@ async def _stream_agent(req: AskRequest):
         write_conf = req.writeConfirmation.model_dump() if req.writeConfirmation else None
         confirmed = req.confirmedAction.model_dump() if req.confirmedAction else None
         attachments = [{"filename": a.filename, "contentBase64": a.contentBase64} for a in req.attachments]
+        conv_state = req.conversationState.model_dump() if req.conversationState else None
         async for kind, data in run_agent_loop_stream(
             question=req.question,
-            system_prompt=TABLEAU_AGENT_SYSTEM_PROMPT,
+            system_prompt=get_system_prompt(req.question),
             server_configs=server_configs,
             provider=req.provider,
             model=req.model,
@@ -97,6 +107,8 @@ async def _stream_agent(req: AskRequest):
             write_confirmation=write_conf,
             confirmed_action=confirmed,
             attachments=attachments,
+            conversation_state=conv_state,
+            trace_id=req.traceId or None,
         ):
             if kind == "thought":
                 yield _chunk_line("thought", data)
@@ -123,7 +135,8 @@ async def _stream_agent(req: AskRequest):
 @router.post("/ask")
 async def ask(req: AskRequest):
     """Run the Tableau Q&A agent (streaming)."""
-    logger.info("Agent ask: model=%s provider=%s", req.model, req.provider)
+    trace_id = req.traceId or ""
+    logger.info("Agent ask: traceId=%s model=%s provider=%s", trace_id or "(none)", req.model, req.provider)
     return StreamingResponse(
         _stream_agent(req),
         media_type="text/plain; charset=utf-8",
@@ -139,10 +152,11 @@ async def ask_sync(req: AskRequest):
     write_conf = req.writeConfirmation.model_dump() if req.writeConfirmation else None
     confirmed = req.confirmedAction.model_dump() if req.confirmedAction else None
     attachments = [{"filename": a.filename, "contentBase64": a.contentBase64} for a in req.attachments]
+    conv_state = req.conversationState.model_dump() if req.conversationState else None
     try:
-        answer, sources, tool_calls, awaiting = await run_agent_loop(
+        answer, sources, tool_calls, awaiting, out_state = await run_agent_loop(
             question=req.question,
-            system_prompt=TABLEAU_AGENT_SYSTEM_PROMPT,
+            system_prompt=get_system_prompt(req.question),
             server_configs=server_configs,
             provider=req.provider,
             model=req.model,
@@ -150,8 +164,10 @@ async def ask_sync(req: AskRequest):
             write_confirmation=write_conf,
             confirmed_action=confirmed,
             attachments=attachments,
+            conversation_state=conv_state,
         )
-        return AskResponse(answer=answer, sources=sources, tool_calls=tool_calls, awaitingConfirmation=awaiting)
+        state = ConversationState(**out_state) if out_state and any(out_state.get(k) for k in ("currentDatasourceId", "lastQuery", "establishedFilters")) else None
+        return AskResponse(answer=answer, sources=sources, tool_calls=tool_calls, awaitingConfirmation=awaiting, conversationState=state)
     except Exception as e:
         logger.exception("Agent ask failed")
         raise HTTPException(status_code=500, detail=str(e))

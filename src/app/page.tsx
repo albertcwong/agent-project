@@ -121,6 +121,7 @@ function ChatPageContent() {
     updateTitle,
     togglePin,
     appendMessages,
+    updateConversationState,
   } = useThreads();
 
   const handleNewChat = () => {
@@ -128,8 +129,52 @@ function ChatPageContent() {
   };
 
   const handleRenameThread = (id: string, currentTitle: string) => {
+    // #region agent log
+    fetch("http://127.0.0.1:7597/ingest/a3c5ee10-7c43-4948-a3a4-7f0d0cdfa022", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "45b476" },
+      body: JSON.stringify({
+        sessionId: "45b476",
+        location: "page.tsx:handleRenameThread:entry",
+        message: "handleRenameThread invoked",
+        data: { id, currentTitle },
+        timestamp: Date.now(),
+        hypothesisId: "H1",
+      }),
+    }).catch(() => {});
+    // #endregion
     const name = window.prompt("Rename chat", currentTitle);
-    if (name != null && name.trim()) updateTitle(id, name.trim());
+    // #region agent log
+    fetch("http://127.0.0.1:7597/ingest/a3c5ee10-7c43-4948-a3a4-7f0d0cdfa022", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "45b476" },
+      body: JSON.stringify({
+        sessionId: "45b476",
+        location: "page.tsx:handleRenameThread:afterPrompt",
+        message: "after window.prompt",
+        data: { name, nameIsNull: name === null, nameTrimmed: name != null ? name.trim() : null },
+        timestamp: Date.now(),
+        hypothesisId: "H2",
+      }),
+    }).catch(() => {});
+    // #endregion
+    if (name != null && name.trim()) {
+      // #region agent log
+      fetch("http://127.0.0.1:7597/ingest/a3c5ee10-7c43-4948-a3a4-7f0d0cdfa022", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "45b476" },
+        body: JSON.stringify({
+          sessionId: "45b476",
+          location: "page.tsx:handleRenameThread:callingUpdateTitle",
+          message: "calling updateTitle",
+          data: { id, newTitle: name.trim() },
+          timestamp: Date.now(),
+          hypothesisId: "H3",
+        }),
+      }).catch(() => {});
+      // #endregion
+      updateTitle(id, name.trim());
+    }
   };
 
   const [sending, setSending] = useState(false);
@@ -182,6 +227,7 @@ function ChatPageContent() {
           history,
           ...(writeConf && { writeConfirmation: writeConf }),
           ...(attachments?.length && { attachments }),
+          ...(thread.conversationState && { conversationState: thread.conversationState }),
         };
         const controller = new AbortController();
         abortControllerRef.current = controller;
@@ -205,6 +251,7 @@ function ChatPageContent() {
           const appAcc: Array<{ resourceUri: string; toolName: string; result: string; serverId: string }> = [];
           const downloadAcc: Array<{ filename: string; contentBase64: string }> = [];
           let confirmData: { action: { toolName: string; arguments: Record<string, unknown> }; correlationId: string; question: string; model: string; provider: string; attachments?: { filename: string; contentBase64: string }[] } | null = null;
+          let conversationState: { currentDatasourceId?: string; lastQuery?: Record<string, unknown>; establishedFilters?: Record<string, unknown> } | undefined;
           const flush = () => {
             rafId = null;
             if (thoughtAcc) {
@@ -232,7 +279,10 @@ function ChatPageContent() {
                     else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
                     else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
                     else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider, attachments };
-                    else if (obj.type === "done" && obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
+                    else if (obj.type === "done") {
+                      if (obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
+                      if (obj.meta?.conversationState) conversationState = obj.meta.conversationState;
+                    }
                   } catch {
                     // skip malformed lines
                   }
@@ -247,7 +297,10 @@ function ChatPageContent() {
                   else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
                   else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
                   else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider, attachments };
-                  else if (obj.type === "done" && obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
+                  else if (obj.type === "done") {
+                    if (obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
+                    if (obj.meta?.conversationState) conversationState = obj.meta.conversationState;
+                  }
                 } catch { /* skip */ }
               }
             }
@@ -259,6 +312,7 @@ function ChatPageContent() {
             setPendingConfirmation(confirmData);
             return;
           }
+          if (conversationState != null) updateConversationState(thread.id, conversationState);
           const finalContent = textAcc.trim() || (thoughtAcc.trim() ? thoughtAcc.trim() : null) || (appAcc.length ? "Results:" : null) || (downloadAcc.length ? "Downloaded files:" : null);
           if (!finalContent) {
             throw new Error("No response from agent. The provider may not support tool calling (try OpenAI).");
@@ -284,6 +338,7 @@ function ChatPageContent() {
           if (!answer) {
             throw new Error(data.error || "No response from agent.");
           }
+          if (data.conversationState) updateConversationState(thread.id, data.conversationState);
           appendMessages(thread.id, [{ role: "assistant", content: answer }]);
         }
       } else {
@@ -296,7 +351,12 @@ function ChatPageContent() {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages, model, provider }),
+          body: JSON.stringify({
+            messages,
+            model,
+            provider,
+            ...(attachments?.length && { attachments }),
+          }),
           signal: controller.signal,
         });
         if (!res.ok) {
@@ -340,7 +400,7 @@ function ChatPageContent() {
       stepTimingsRef.current = {};
       if (typeof rafId === "number") cancelAnimationFrame(rafId);
     }
-  }, [activeThread, create, appendMessages, agentMode]);
+  }, [activeThread, create, appendMessages, updateConversationState, agentMode]);
 
   const handleConfirmWrite = useCallback(async (scope: "once" | "session" | "forever") => {
     const pending = pendingConfirmation;
@@ -367,6 +427,7 @@ function ChatPageContent() {
       writeConfirmation: { scope },
       confirmedAction: pending.action,
       ...(pending.attachments?.length && { attachments: pending.attachments }),
+      ...(activeThread.conversationState && { conversationState: activeThread.conversationState }),
     };
     try {
       const res = await fetch("/api/agent/ask", {
@@ -382,6 +443,7 @@ function ChatPageContent() {
       let thoughtAcc = "";
       let textAcc = "";
       let toolCallsAcc: string[] = [];
+      let confirmConversationState: { currentDatasourceId?: string; lastQuery?: Record<string, unknown>; establishedFilters?: Record<string, unknown> } | undefined;
       const appAcc: Array<{ resourceUri: string; toolName: string; result: string; serverId: string }> = [];
       const downloadAcc: Array<{ filename: string; contentBase64: string }> = [];
       const flush = () => {
@@ -409,7 +471,10 @@ function ChatPageContent() {
               else if (obj.type === "text") textAcc += obj.content ?? "";
               else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
               else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
-              else if (obj.type === "done" && obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
+              else if (obj.type === "done") {
+                if (obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
+                if (obj.meta?.conversationState) confirmConversationState = obj.meta.conversationState;
+              }
             } catch { /* skip */ }
             if (rafId === null) rafId = requestAnimationFrame(flush);
           }
@@ -421,10 +486,14 @@ function ChatPageContent() {
             else if (obj.type === "text") textAcc += obj.content ?? "";
             else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
             else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
-            else if (obj.type === "done" && obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
+            else if (obj.type === "done") {
+              if (obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
+              if (obj.meta?.conversationState) confirmConversationState = obj.meta.conversationState;
+            }
           } catch { /* skip */ }
         }
       }
+      if (confirmConversationState != null) updateConversationState(activeThread.id, confirmConversationState);
       const content = textAcc.trim() || (thoughtAcc.trim() ? thoughtAcc.trim() : null) || (appAcc.length ? "Results:" : null) || (downloadAcc.length ? "Downloaded files:" : null);
       if (content) {
         const steps = [...thoughtAcc.matchAll(/Step (\d+):/g)].map((m) => parseInt(m[1], 10));
@@ -455,7 +524,7 @@ function ChatPageContent() {
       stepTimingsRef.current = {};
       if (typeof rafId === "number") cancelAnimationFrame(rafId);
     }
-  }, [pendingConfirmation, activeThread, appendMessages]);
+  }, [pendingConfirmation, activeThread, appendMessages, updateConversationState]);
 
   const handleCancelSend = useCallback(() => {
     abortControllerRef.current?.abort();

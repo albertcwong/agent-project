@@ -1,0 +1,16 @@
+- id: "ambiguous_question"
+  question: "How are things going?"
+  category: "general"
+  expected:
+    tools_prohibited: ["query-datasource", "download-workbook", "publish-workbook"]
+    answer_must_not_contain: ["Error"]
+    max_iterations: 4
+
+- id: "ambiguous_datasource"
+  question: "Show me sales data"
+  category: "query"
+  scenario: "ambiguous_datasource"
+  expected:
+    tools_required_any: [["list-datasources", "search-content"]]
+    answer_must_not_contain: ["Error", "reconnect"]
+    max_iterations: 8

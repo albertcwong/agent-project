@@ -1,0 +1,32 @@
+- id: "sales_by_region"
+  question: "Show me total sales by region"
+  category: "query"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    tools_prohibited: ["publish-workbook", "download-workbook"]
+    query_must_contain:
+      fields: ["Region"]
+      aggregation: "SUM"
+    answer_must_contain: ["region", "sales"]
+    answer_must_not_contain: ["I cannot", "not possible", "reconnect"]
+    max_iterations: 8
+
+- id: "top_customers"
+  question: "Who are the top 10 customers by revenue?"
+  category: "query"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    query_must_contain:
+      aggregation: "SUM"
+    max_iterations: 8
+
+- id: "sales_with_filter"
+  question: "Show me sales for the East region only"
+  category: "query"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    query_must_contain:
+      fields: ["Region"]
+      # filters: ["East"]  # Agent may filter in query or mention East in answer
+    answer_must_contain: ["east", "sales"]
+    max_iterations: 8

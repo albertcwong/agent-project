@@ -1,0 +1,9 @@
+{
+  "columns": [
+    {"caption": "Region", "dataType": "string", "role": "dimension"},
+    {"caption": "Sales", "dataType": "real", "role": "measure"},
+    {"caption": "Quarter", "dataType": "string", "role": "dimension"},
+    {"caption": "Customer", "dataType": "string", "role": "dimension"},
+    {"caption": "Revenue", "dataType": "real", "role": "measure"}
+  ]
+}

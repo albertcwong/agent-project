@@ -1,0 +1,18 @@
+- id: "list_datasources"
+  question: "What datasources do I have?"
+  category: "discovery"
+  expected:
+    tools_required_any: [["list-datasources", "search-content"]]
+    tools_prohibited: ["publish-workbook", "query-datasource"]
+    answer_must_contain_any: ["datasource", "data source"]
+    answer_must_not_contain: ["I cannot", "reconnect"]
+    max_iterations: 4
+
+- id: "metadata_before_query"
+  question: "What fields are in the Sales Analytics datasource?"
+  category: "discovery"
+  expected:
+    tools_required_any: [["list-datasources", "search-content"]]
+    tools_required: ["get-datasource-metadata"]
+    answer_must_contain_any: ["column", "field", "dimension", "measure", "Region", "Sales"]
+    max_iterations: 6
