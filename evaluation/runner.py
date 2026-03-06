@@ -27,6 +27,7 @@ async def run_evaluation(
     model: str | None = None,
     provider: str = "openai",
     verbose: bool = False,
+    trace_failures: bool = True,
 ) -> list[dict]:
     cases_path = cases_path or CASES_DIR
     if isinstance(cases_path, str):
@@ -77,7 +78,7 @@ async def run_evaluation(
 
         start = time.monotonic()
         try:
-            answer, sources, tool_calls, awaiting, state = await run_agent_loop(
+            answer, sources, tool_calls, awaiting, state, trace = await run_agent_loop(
                 question=case["question"],
                 system_prompt=get_system_prompt(case["question"]),
                 server_configs=mock_configs,
@@ -87,6 +88,7 @@ async def run_evaluation(
                 conversation_state=conv_state,
                 attachments=case.get("attachments"),
                 _pool_override=pool_dict,
+                _trace=trace_failures or verbose,
             )
         except Exception as e:
             r = {
@@ -149,6 +151,15 @@ async def run_evaluation(
         all_pass = all(
             e.get("pass", True) for e in evals.values() if isinstance(e, dict)
         )
+
+        if (trace_failures or verbose) and trace and not all_pass:
+            print("\n--- TRACE (failed case) ---", flush=True)
+            print(trace.format(), flush=True)
+            print("--- END TRACE ---\n", flush=True)
+        elif verbose and trace:
+            print("\n--- TRACE ---", flush=True)
+            print(trace.format(), flush=True)
+            print("--- END TRACE ---\n", flush=True)
 
         r = {
             "id": case.get("id", "?"),

@@ -57,8 +57,15 @@ def evaluate_query(
                     actual.append(f.get("fieldCaption") or f.get("field") or str(f))
                 else:
                     actual.append(str(f))
+            filters = query.get("filters") or query.get("filter") or []
+            filter_fields = []
+            for flt in filters if isinstance(filters, list) else []:
+                if isinstance(flt, dict) and (flt.get("field") or flt.get("fieldCaption")):
+                    filter_fields.append(str(flt.get("field") or flt.get("fieldCaption")))
             for exp in expected:
-                if not any(exp.lower() in str(a).lower() for a in actual):
+                in_fields = any(exp.lower() in str(a).lower() for a in actual)
+                in_filters = any(exp.lower() in str(f).lower() for f in filter_fields)
+                if not in_fields and not in_filters:
                     results["pass"] = False
                     results["errors"].append(f"Expected field '{exp}' not in query")
                     break

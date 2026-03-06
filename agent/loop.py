@@ -14,6 +14,7 @@ STREAM_READ_TIMEOUT = float(os.environ.get("LLM_STREAM_READ_TIMEOUT", "300"))
 
 from agent.intent import classify as classify_intent
 from agent.mcp_client import mcp_session_pool
+from agent.trace import LoopTrace
 
 
 @asynccontextmanager
@@ -35,6 +36,9 @@ TRUNCATE_MARKER = "\n\n... [truncated]"
 
 # Tools that return chartable data; metadata-only tools (e.g. get-datasource-metadata) excluded
 _CHART_TOOLS = {"query-datasource", "get-view-data"}
+
+# Tools exempt from redundancy check (agent may re-read after errors)
+_REDUNDANCY_EXEMPT = {"get-datasource-metadata", "list-datasources", "search-content", "list-projects", "list-workbooks"}
 
 # Keywords indicating user wants a chart/visualization (MCP app)
 _CHART_KEYWORDS = (
@@ -407,6 +411,7 @@ async def run_agent_loop_stream(
         sources: list[dict] = []
         conv_state = dict(conversation_state) if conversation_state else {}
         query_data_cache: dict[str, dict] = {}  # Full (untruncated) results keyed by datasource/view id
+        seen_calls: set[str] = set()
         workflow = classify_intent(question)
         logger.info("traceId=%s workflow=%s question_len=%d", trace_id or "(none)", workflow, len(question))
 
@@ -570,6 +575,12 @@ async def run_agent_loop_stream(
                 if (preview := _tool_input_preview(name, args)):
                     for line in preview.split("\n"):
                         yield "thought", f"    {line}"
+                call_key = f"{name}:{json.dumps(args, sort_keys=True)}"
+                if call_key in seen_calls and name not in _REDUNDANCY_EXEMPT:
+                    result = "You already called this tool with these exact arguments. Use the data you already have or adjust your approach."
+                    tool_results.append((name, result))
+                    continue
+                seen_calls.add(call_key)
                 tool_calls_log.append({"name": name, "arguments": args})
 
                 if name in WRITE_TOOLS and not write_confirmation:
@@ -694,29 +705,41 @@ async def run_agent_loop(
     attachments: list[dict] | None = None,
     conversation_state: dict | None = None,
     _pool_override: dict | None = None,
-) -> tuple[str, list[dict], list[dict], bool, dict | None]:
+    _trace: bool = False,
+) -> tuple[str, list[dict], list[dict], bool, dict | None, "LoopTrace | None"]:
     """
-    Run the agent loop. Returns (answer, sources, tool_calls, awaitingConfirmation, conversationState).
+    Run the agent loop. Returns (answer, sources, tool_calls, awaitingConfirmation, conversationState, trace).
     If server_configs is empty, returns a prompt to connect a server.
     """
+    trace = LoopTrace() if _trace else None
+    if _trace:
+        trace.intent = classify_intent(question)
+        trace.system_prompt_length = len(system_prompt)
+
     if not server_configs:
+        if trace:
+            trace.termination_reason = "no_config"
         return (
             "Please connect at least one Tableau MCP server in Settings & Help before asking Tableau questions.",
             [],
             [],
             False,
             conversation_state,
+            trace,
         )
 
     async with _pool_context(server_configs, _pool_override) as pool:
         tools, _, tool_server_map = await get_tools_for_servers(server_configs, pool=pool)
         if not tools:
+            if trace:
+                trace.termination_reason = "no_tools"
             return (
                 "No Tableau tools available. Your session may have expired — sign in again in Settings & Help.",
                 [],
                 [],
                 False,
                 conversation_state,
+                trace,
             )
 
         base_url = os.environ.get("LLM_PROXY_URL", "http://localhost:8000").rstrip("/")
@@ -744,6 +767,7 @@ async def run_agent_loop(
         sources: list[dict] = []
         conv_state = dict(conversation_state) if conversation_state else {}
         query_data_cache: dict[str, dict] = {}
+        seen_calls: set[str] = set()
 
         if confirmed_action and write_confirmation:
             name = confirmed_action.get("toolName") or ""
@@ -763,6 +787,8 @@ async def run_agent_loop(
                 messages.append({"role": "tool", "tool_call_id": tc_id, "content": result})
 
         for i in range(MAX_AGENT_ITERATIONS):
+            if trace:
+                trace.add_iteration(i + 1)
             resp = await client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -771,20 +797,29 @@ async def run_agent_loop(
             )
             choice = resp.choices[0] if resp.choices else None
             if not choice:
-                return ("No response from model.", sources, tool_calls_log, False, conversation_state)
+                if trace:
+                    trace.termination_reason = "no_response"
+                return ("No response from model.", sources, tool_calls_log, False, conversation_state, trace)
 
             msg = choice.message
             finish_reason = getattr(choice, "finish_reason", None) or "stop"
+            tool_names = [t.function.name for t in (msg.tool_calls or [])]
+            if trace:
+                trace.set_llm_response(msg.content or "", finish_reason, tool_names)
 
             if finish_reason in ("stop", "length"):
+                if trace:
+                    trace.termination_reason = "stop" if finish_reason == "stop" else "length"
                 content = (msg.content or "").strip()
                 if finish_reason == "length" and content:
                     content = f"{content}\n\n(Response was truncated due to length. The answer may be incomplete.)"
-                return (content or "No answer generated.", sources, tool_calls_log, False, conv_state if conv_state else conversation_state)
+                return (content or "No answer generated.", sources, tool_calls_log, False, conv_state if conv_state else conversation_state, trace)
 
             if not msg.tool_calls:
+                if trace:
+                    trace.termination_reason = "no_tool_calls"
                 content = (msg.content or "").strip()
-                return (content or "No answer generated.", sources, tool_calls_log, False, conv_state if conv_state else conversation_state)
+                return (content or "No answer generated.", sources, tool_calls_log, False, conv_state if conv_state else conversation_state, trace)
 
             messages.append(
                 {
@@ -809,47 +844,60 @@ async def run_agent_loop(
                     args = json.loads(tc.function.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                tool_calls_log.append({"name": name, "arguments": args})
-
-                if name in WRITE_TOOLS and not write_confirmation:
-                    return (
-                        "Please confirm the publish action to proceed.",
-                        sources,
-                        tool_calls_log,
-                        True,
-                        conv_state if conv_state else conversation_state,
-                    )
-
-                args = _inject_attachments_in_args(args, attachments or [])
-                if name == "execute_python":
-                    py_data = args.get("data") or {}
-                    if isinstance(py_data, dict):
-                        has_real_data = any(isinstance(v, list) and v for v in py_data.values())
-                        if not has_real_data and query_data_cache:
-                            last_data = query_data_cache.get("last") or next(iter(query_data_cache.values()), None)
-                            if last_data:
-                                rows = last_data.get("rows") or last_data.get("data") or []
-                                if isinstance(rows, list) and rows:
-                                    key = next(iter(py_data.keys()), "data") if py_data else "data"
-                                    py_data = {key: rows}
-                    result = run_execute_python(args.get("code", ""), py_data)
+                call_key = f"{name}:{json.dumps(args, sort_keys=True)}"
+                is_redundant = call_key in seen_calls and name not in _REDUNDANCY_EXEMPT
+                if is_redundant:
+                    result = "You already called this tool with these exact arguments. Use the data you already have or adjust your approach."
+                    tool_results.append((name, result))
+                    if trace:
+                        trace.add_tool_call(name, args, result, was_redundant=True)
                 else:
-                    cfg = tool_server_map.get(name) or server_configs[0]
-                    sid = cfg.get("id", cfg.get("url", ""))
-                    try:
-                        result = await pool["call_tool"](sid, name, args)
-                    except Exception:
-                        logger.exception("Tool %s failed", name)
-                        result = "Error: MCP server connection failed. Please try again."
-                tool_results.append((name, result))
-                if name in ("query-datasource", "get-view-data") and not (str(result) or "").strip().startswith("Error:"):
-                    try:
-                        parsed = json.loads(result)
-                        ds_id = str(args.get("datasourceId") or args.get("viewId") or "last")
-                        query_data_cache[ds_id] = parsed
-                        query_data_cache["last"] = parsed
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+                    tool_calls_log.append({"name": name, "arguments": args})
+                    seen_calls.add(call_key)
+                    if name in WRITE_TOOLS and not write_confirmation:
+                        if trace:
+                            trace.termination_reason = "confirmation"
+                        return (
+                            "Please confirm the publish action to proceed.",
+                            sources,
+                            tool_calls_log,
+                            True,
+                            conv_state if conv_state else conversation_state,
+                            trace,
+                        )
+
+                    args = _inject_attachments_in_args(args, attachments or [])
+                    if name == "execute_python":
+                        py_data = args.get("data") or {}
+                        if isinstance(py_data, dict):
+                            has_real_data = any(isinstance(v, list) and v for v in py_data.values())
+                            if not has_real_data and query_data_cache:
+                                last_data = query_data_cache.get("last") or next(iter(query_data_cache.values()), None)
+                                if last_data:
+                                    rows = last_data.get("rows") or last_data.get("data") or []
+                                    if isinstance(rows, list) and rows:
+                                        key = next(iter(py_data.keys()), "data") if py_data else "data"
+                                        py_data = {key: rows}
+                        result = run_execute_python(args.get("code", ""), py_data)
+                    else:
+                        cfg = tool_server_map.get(name) or server_configs[0]
+                        sid = cfg.get("id", cfg.get("url", ""))
+                        try:
+                            result = await pool["call_tool"](sid, name, args)
+                        except Exception:
+                            logger.exception("Tool %s failed", name)
+                            result = "Error: MCP server connection failed. Please try again."
+                    tool_results.append((name, result))
+                    if trace:
+                        trace.add_tool_call(name, args, str(result), was_redundant=False)
+                    if name in ("query-datasource", "get-view-data") and not (str(result) or "").strip().startswith("Error:"):
+                        try:
+                            parsed = json.loads(result)
+                            ds_id = str(args.get("datasourceId") or args.get("viewId") or "last")
+                            query_data_cache[ds_id] = parsed
+                            query_data_cache["last"] = parsed
+                        except (json.JSONDecodeError, TypeError):
+                            pass
 
             for tc, (name, result) in zip(msg.tool_calls, tool_results):
                 content = _format_python_result(result) if name == "execute_python" else _sanitize_tool_result(result)
@@ -870,10 +918,13 @@ async def run_agent_loop(
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": tool_content})
 
     summary = f"Tools used: {', '.join(t.get('name', '') for t in tool_calls_log)}." if tool_calls_log else ""
+    if trace:
+        trace.termination_reason = "max_iterations"
     return (
         f"I've reached the limit of steps. {summary} You can ask a follow-up to continue.",
         sources,
         tool_calls_log,
         False,
         conv_state if conv_state else conversation_state,
+        trace,
     )

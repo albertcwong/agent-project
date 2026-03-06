@@ -154,7 +154,7 @@ async def ask_sync(req: AskRequest):
     attachments = [{"filename": a.filename, "contentBase64": a.contentBase64} for a in req.attachments]
     conv_state = req.conversationState.model_dump() if req.conversationState else None
     try:
-        answer, sources, tool_calls, awaiting, out_state = await run_agent_loop(
+        answer, sources, tool_calls, awaiting, out_state, _ = await run_agent_loop(
             question=req.question,
             system_prompt=get_system_prompt(req.question),
             server_configs=server_configs,

@@ -69,11 +69,14 @@ class MockMCPPool:
                 self.discovered_ids.add(ds["id"])
             return result
         if tool_name == "search-content":
-            result = json.dumps({
-                "datasources": [{"id": "ds-123", "name": "Sales Analytics"}],
-                "workbooks": [],
-            })
-            self.discovered_ids.add("ds-123")
+            datasources = [{"id": "ds-123", "name": "Sales Analytics"}]
+            if self.scenario == "field_not_found_recovery":
+                datasources.append({"id": "ds-456", "name": "Revenue Metrics", "type": "datasource"})
+            projects = [{"id": "proj-1", "name": "Finance", "parentProjectId": None}]
+            workbooks = [{"id": "wb-1", "name": "Sales Analytics", "projectId": "proj-1"}]
+            result = json.dumps({"datasources": datasources, "workbooks": workbooks, "projects": projects})
+            for ds in datasources:
+                self.discovered_ids.add(ds["id"])
             return result
         if tool_name == "get-datasource-metadata":
             ds_id = str(args.get("datasourceId") or args.get("datasource_id") or "ds-123")
