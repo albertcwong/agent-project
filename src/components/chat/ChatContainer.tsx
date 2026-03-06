@@ -15,6 +15,7 @@ interface ChatContainerProps {
   onRename?: (id: string, currentTitle: string) => void;
   streamingContent?: string | null;
   streamingThought?: string | null;
+  stepTimings?: Record<number, { start: number; end?: number }>;
   onSend: (content: string, model: string, provider: string, attachments?: Attachment[]) => Promise<void>;
   onCancel?: () => void;
   onModelChange?: (model: string, provider: string) => void;
@@ -34,6 +35,7 @@ export function ChatContainer({
   onRename,
   streamingContent,
   streamingThought,
+  stepTimings,
   onSend,
   onCancel,
   onModelChange,
@@ -46,7 +48,7 @@ export function ChatContainer({
     <div className="flex h-full min-h-0 flex-col">
       <ChatHeader modelName={modelName} title={title} threadId={threadId} pinned={pinned} onPin={onPin} onRename={onRename} />
       <div className="flex min-h-0 flex-1 flex-col bg-[var(--message-bar-area-bg)]">
-        <ChatMessages messages={messages} streamingContent={streamingContent} streamingThought={streamingThought} />
+        <ChatMessages messages={messages} streamingContent={streamingContent} streamingThought={streamingThought} stepTimings={stepTimings} />
         <div className="shrink-0 p-4">
         <ChatInput
         onSend={onSend}

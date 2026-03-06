@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowUp } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -16,10 +16,19 @@ function sanitizeContent(s: string): string {
   return s.replace(/\s*unhandled errors in a TaskGroup[^\n]*/g, "").trimEnd();
 }
 
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.floor((ms % 60_000) / 1000);
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
 interface Message {
   role: string;
   content: string;
   thought?: string;
+  stepTimings?: Record<number, { start: number; end?: number }>;
   toolCalls?: string[];
   apps?: McpApp[];
   downloads?: FileDownload[];
@@ -29,10 +38,60 @@ interface ChatMessagesProps {
   messages: Message[];
   streamingContent?: string | null;
   streamingThought?: string | null;
+  stepTimings?: Record<number, { start: number; end?: number }>;
   className?: string;
 }
 
-export function ChatMessages({ messages, streamingContent, streamingThought, className }: ChatMessagesProps) {
+function ThoughtWithTimers({
+  thought,
+  timings,
+  isStreaming,
+}: {
+  thought: string;
+  timings?: Record<number, { start: number; end?: number }>;
+  isStreaming?: boolean;
+}) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!isStreaming || !timings) return;
+    const hasActive = Object.values(timings).some((t) => t.end == null);
+    if (!hasActive) return;
+    const id = setInterval(() => tick((n) => n + 1), 100);
+    return () => clearInterval(id);
+  }, [isStreaming, timings]);
+  const normalized = thought.replace(/\\n/g, "\n");
+  if (!timings || Object.keys(timings).length === 0) {
+    return <pre className="text-caption mt-1 max-h-[50vh] overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2">{normalized}</pre>;
+  }
+  const lines = normalized.split("\n");
+  const out: ReactNode[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(/^Step (\d+):/);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      const t = timings[n];
+      const dur = t?.end != null ? formatDuration(t.end - t.start) : t?.start != null ? formatDuration(Date.now() - t.start) : null;
+      out.push(
+        <span key={i}>
+          {line}
+          {dur != null && <span className="ml-2 text-muted-foreground">({dur})</span>}
+          {"\n"}
+        </span>
+      );
+    } else {
+      out.push(
+        <span key={i}>
+          {line}
+          {"\n"}
+        </span>
+      );
+    }
+  }
+  return <pre className="text-caption mt-1 max-h-[50vh] overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2">{out}</pre>;
+}
+
+export function ChatMessages({ messages, streamingContent, streamingThought, stepTimings, className }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -108,9 +167,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
                       <summary className="text-label cursor-pointer text-muted-foreground hover:text-foreground">
                         Thinking
                       </summary>
-                      <pre className="text-caption mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2">
-                        {msg.thought}
-                      </pre>
+                      <ThoughtWithTimers thought={msg.thought} timings={msg.stepTimings} isStreaming={false} />
                     </details>
                   )}
                   <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-3 prose-li:my-1 prose-headings:mt-6 prose-headings:mb-3 prose-th:px-4 prose-th:py-2 prose-td:px-4 prose-td:py-2">
@@ -155,9 +212,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, cla
                   <summary className="text-label cursor-pointer text-muted-foreground hover:text-foreground">
                     Thinking
                   </summary>
-                  <pre className="text-caption mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2">
-                    {streamingThought}
-                  </pre>
+                  <ThoughtWithTimers thought={streamingThought} timings={stepTimings} isStreaming />
                 </details>
               )}
               <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-3 prose-li:my-1 prose-headings:mt-6 prose-headings:mb-3 prose-th:px-4 prose-th:py-2 prose-td:px-4 prose-td:py-2">

@@ -85,14 +85,42 @@ def _sanitize_tool_result(s: str) -> str:
     return s
 
 
-def _tool_result_summary(name: str, result: str) -> str:
-    """Brief summary for status stream. E.g. 'query-datasource: 1247 rows'."""
+def _to_preview_str(val, max_len: int = 2000) -> str:
+    """Coerce value to string for preview. Handles dict (e.g. structured query)."""
+    if isinstance(val, str):
+        s = val.strip()
+    elif isinstance(val, dict):
+        s = json.dumps(val, indent=2)
+    else:
+        s = str(val)
+    return s[:max_len] + ("..." if len(s) > max_len else "")
+
+
+def _tool_input_preview(name: str, args: dict) -> str | None:
+    """Extract key input for thought stream. Returns None if nothing to show."""
+    if name == "execute_python":
+        code = args.get("code") or ""
+        if code and isinstance(code, str):
+            return _to_preview_str(code)
+    if name == "query-datasource":
+        q = args.get("query") or args.get("queryText") or ""
+        if q:
+            return _to_preview_str(q)
+    if name == "get-view-data":
+        vid = args.get("viewId") or args.get("view_id")
+        if vid:
+            return f"viewId: {vid}"
+    return None
+
+
+def _tool_result_summary(name: str, result: str, max_len: int = 800) -> str:
+    """Summary for thought stream. Shows fuller detail; truncates only very long output."""
     if not result or result.strip().startswith("Error:"):
         return "error"
     try:
         data = json.loads(result) if result.strip().startswith("{") else None
         if not isinstance(data, dict):
-            return result[:50] + "..." if len(result) > 50 else result
+            return result[:max_len] + "..." if len(result) > max_len else result
         if name in ("query-datasource", "get-view-data"):
             arr = data.get("rows") or data.get("data") or []
             n = len(arr) if isinstance(arr, list) else 0
@@ -102,14 +130,23 @@ def _tool_result_summary(name: str, result: str) -> str:
             n = len(cols) if isinstance(cols, list) else 0
             return f"{n} columns"
         if name == "execute_python":
-            return "complete" if not data.get("error") else "error"
+            if data.get("error"):
+                return f"error: {data['error'][:500]}"
+            parts = []
+            if data.get("stdout"):
+                parts.append(data["stdout"].rstrip()[:500])
+            if "result" in data and data["result"] is not None:
+                r = data["result"]
+                s = json.dumps(r) if not isinstance(r, str) else r
+                parts.append(s[:500] + ("..." if len(s) > 500 else ""))
+            return "\n".join(parts) if parts else "complete"
         if name in ("search-content", "list-datasources", "list-workbooks", "list-views", "list-projects", "list-flows"):
             items = data.get("datasources") or data.get("workbooks") or data.get("views") or data.get("projects") or data.get("flows") or []
             n = len(items) if isinstance(items, list) else 0
             return f"{n} found"
     except (json.JSONDecodeError, TypeError):
         pass
-    return result[:50] + "..." if len(result) > 50 else result
+    return result[:max_len] + "..." if len(result) > max_len else result
 
 
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "gpt-4")
@@ -252,6 +289,9 @@ async def run_agent_loop_stream(
                 tool_calls_log.append({"name": name, "arguments": args})
                 try:
                     yield "thought", f"Using tool: {name}"
+                    if (preview := _tool_input_preview(name, args)):
+                        for line in preview.split("\n"):
+                            yield "thought", f"    {line}"
                     result = await pool["call_tool"](sid, name, args)
                 except Exception:
                     logger.exception("Tool %s failed", name)
@@ -413,6 +453,9 @@ async def run_agent_loop_stream(
                     args = json.loads(tc["function"].get("arguments") or "{}")
                 except json.JSONDecodeError:
                     args = {}
+                if (preview := _tool_input_preview(name, args)):
+                    for line in preview.split("\n"):
+                        yield "thought", f"    {line}"
                 tool_calls_log.append({"name": name, "arguments": args})
 
                 if name in WRITE_TOOLS and not write_confirmation:

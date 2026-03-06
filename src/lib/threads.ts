@@ -14,6 +14,7 @@ export interface ChatMessage {
   role: string;
   content: string;
   thought?: string;
+  stepTimings?: Record<number, { start: number; end?: number }>;
   toolCalls?: string[];
   apps?: McpApp[];
   downloads?: FileDownload[];

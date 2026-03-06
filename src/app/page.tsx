@@ -28,6 +28,18 @@ const TOOL_LABELS: Record<string, string> = {
   "publish-flow": "Publish flow",
 };
 
+function parseStepTimings(thought: string, ref: Record<number, { start: number; end?: number }>, now: number): Record<number, { start: number; end?: number }> {
+  const steps = [...thought.matchAll(/Step (\d+):/g)].map((m) => parseInt(m[1], 10));
+  const out = { ...ref };
+  for (let i = 0; i < steps.length; i++) {
+    const n = steps[i];
+    const prev = steps[i - 1];
+    if (!out[n]) out[n] = { start: now };
+    if (prev != null && out[prev] && out[prev].end == null) out[prev] = { ...out[prev], end: now };
+  }
+  return out;
+}
+
 function WriteConfirmDetails({ action, question }: { action: { toolName: string; arguments: Record<string, unknown> }; question?: string }) {
   const { toolName, arguments: args } = action;
   const label = TOOL_LABELS[toolName] ?? toolName;
@@ -125,6 +137,8 @@ function ChatPageContent() {
 
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
   const [streamingThought, setStreamingThought] = useState<string | null>(null);
+  const [stepTimings, setStepTimings] = useState<Record<number, { start: number; end?: number }>>({});
+  const stepTimingsRef = useRef<Record<number, { start: number; end?: number }>>({});
   const [pendingConfirmation, setPendingConfirmation] = useState<{
     action: { toolName: string; arguments: Record<string, unknown> };
     correlationId: string;
@@ -147,6 +161,9 @@ function ChatPageContent() {
     appendMessages(thread.id, [{ role: "user", content }]);
     setSending(true);
     setStreamingContent("");
+    setStreamingThought(null);
+    stepTimingsRef.current = {};
+    setStepTimings({});
     let rafId: number | null = null;
 
     try {
@@ -190,6 +207,11 @@ function ChatPageContent() {
           let confirmData: { action: { toolName: string; arguments: Record<string, unknown> }; correlationId: string; question: string; model: string; provider: string; attachments?: { filename: string; contentBase64: string }[] } | null = null;
           const flush = () => {
             rafId = null;
+            if (thoughtAcc) {
+              const next = parseStepTimings(thoughtAcc, stepTimingsRef.current, Date.now());
+              stepTimingsRef.current = next;
+              setStepTimings(next);
+            }
             setStreamingThought(thoughtAcc || null);
             setStreamingContent(textAcc || null);
           };
@@ -241,10 +263,17 @@ function ChatPageContent() {
           if (!finalContent) {
             throw new Error("No response from agent. The provider may not support tool calling (try OpenAI).");
           }
+          const steps = [...thoughtAcc.matchAll(/Step (\d+):/g)].map((m) => parseInt(m[1], 10));
+          const lastStep = steps[steps.length - 1];
+          const finalTimings = { ...stepTimingsRef.current };
+          if (lastStep != null && finalTimings[lastStep]?.end == null) {
+            finalTimings[lastStep] = { ...finalTimings[lastStep], end: Date.now() };
+          }
           appendMessages(thread.id, [{
             role: "assistant",
             content: finalContent,
             ...(thoughtAcc.trim() ? { thought: thoughtAcc.trim() } : {}),
+            ...(Object.keys(finalTimings).length ? { stepTimings: finalTimings } : {}),
             ...(toolCallsAcc.length ? { toolCalls: toolCallsAcc } : {}),
             ...(appAcc.length ? { apps: appAcc } : {}),
             ...(downloadAcc.length ? { downloads: downloadAcc } : {}),
@@ -307,6 +336,8 @@ function ChatPageContent() {
       setSending(false);
       setStreamingContent(null);
       setStreamingThought(null);
+      setStepTimings({});
+      stepTimingsRef.current = {};
       if (typeof rafId === "number") cancelAnimationFrame(rafId);
     }
   }, [activeThread, create, appendMessages, agentMode]);
@@ -318,6 +349,8 @@ function ChatPageContent() {
     if (scope !== "once") setWriteConfirmationScope(scope);
     setSending(true);
     setStreamingContent("");
+    stepTimingsRef.current = {};
+    setStepTimings({});
     const controller = new AbortController();
     abortControllerRef.current = controller;
     let rafId: number | null = null;
@@ -353,6 +386,11 @@ function ChatPageContent() {
       const downloadAcc: Array<{ filename: string; contentBase64: string }> = [];
       const flush = () => {
         rafId = null;
+        if (thoughtAcc) {
+          const next = parseStepTimings(thoughtAcc, stepTimingsRef.current, Date.now());
+          stepTimingsRef.current = next;
+          setStepTimings(next);
+        }
         setStreamingThought(thoughtAcc || null);
         setStreamingContent(textAcc || null);
       };
@@ -389,10 +427,17 @@ function ChatPageContent() {
       }
       const content = textAcc.trim() || (thoughtAcc.trim() ? thoughtAcc.trim() : null) || (appAcc.length ? "Results:" : null) || (downloadAcc.length ? "Downloaded files:" : null);
       if (content) {
+        const steps = [...thoughtAcc.matchAll(/Step (\d+):/g)].map((m) => parseInt(m[1], 10));
+        const lastStep = steps[steps.length - 1];
+        const finalTimings = { ...stepTimingsRef.current };
+        if (lastStep != null && finalTimings[lastStep]?.end == null) {
+          finalTimings[lastStep] = { ...finalTimings[lastStep], end: Date.now() };
+        }
         appendMessages(activeThread.id, [{
           role: "assistant",
           content,
           ...(thoughtAcc.trim() ? { thought: thoughtAcc.trim() } : {}),
+          ...(Object.keys(finalTimings).length ? { stepTimings: finalTimings } : {}),
           ...(toolCallsAcc.length ? { toolCalls: toolCallsAcc } : {}),
           ...(appAcc.length ? { apps: appAcc } : {}),
           ...(downloadAcc.length ? { downloads: downloadAcc } : {}),
@@ -406,6 +451,8 @@ function ChatPageContent() {
       setSending(false);
       setStreamingContent(null);
       setStreamingThought(null);
+      setStepTimings({});
+      stepTimingsRef.current = {};
       if (typeof rafId === "number") cancelAnimationFrame(rafId);
     }
   }, [pendingConfirmation, activeThread, appendMessages]);
@@ -491,6 +538,7 @@ function ChatPageContent() {
             onRename={handleRenameThread}
             streamingContent={streamingContent}
             streamingThought={streamingThought}
+            stepTimings={stepTimings}
             onSend={handleSend}
             onCancel={handleCancelSend}
             onModelChange={(id, provider) =>
