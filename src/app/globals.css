@@ -178,3 +178,17 @@
 .prose td:not(:last-child) {
   border-right: 1px solid var(--border);
 }
+
+/* Force word wrap in prose: pre/code often overflow */
+.prose pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 100%;
+}
+.prose pre code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.prose :not(pre) > code {
+  word-break: break-word;
+}

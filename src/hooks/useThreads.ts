@@ -45,24 +45,7 @@ export function useThreads() {
   }, []);
 
   const updateTitle = useCallback((id: string, title: string) => {
-    // #region agent log
-    setThreads((prev) => {
-      const found = prev.some((t) => t.id === id);
-      fetch("http://127.0.0.1:7597/ingest/a3c5ee10-7c43-4948-a3a4-7f0d0cdfa022", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "45b476" },
-        body: JSON.stringify({
-          sessionId: "45b476",
-          location: "useThreads.ts:updateTitle",
-          message: "updateTitle",
-          data: { id, title, found, threadCount: prev.length },
-          timestamp: Date.now(),
-          hypothesisId: "H4",
-        }),
-      }).catch(() => {});
-      return prev.map((t) => (t.id === id ? { ...t, title } : t));
-    });
-    // #endregion
+    setThreads((prev) => prev.map((t) => (t.id === id ? { ...t, title } : t)));
   }, []);
 
   const remove = useCallback((id: string) => {

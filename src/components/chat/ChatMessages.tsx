@@ -24,6 +24,19 @@ function formatDuration(ms: number): string {
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
+function totalThinkingTime(timings: Record<number, { start: number; end?: number }> | undefined): number | null {
+  if (!timings || Object.keys(timings).length === 0) return null;
+  const entries = Object.values(timings);
+  if (entries.some((t) => t.end == null)) return null;
+  return entries.reduce((sum, t) => sum + ((t.end ?? t.start) - t.start), 0);
+}
+
+function thoughtSummary(timings: Record<number, { start: number; end?: number }> | undefined, isStreaming: boolean): string {
+  const total = totalThinkingTime(timings);
+  if (total != null) return `Thought (${formatDuration(total)} total)`;
+  return isStreaming ? "Thinking" : "Thought";
+}
+
 interface Message {
   role: string;
   content: string;
@@ -135,7 +148,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
   return (
     <div className={cn("relative min-h-0 flex-1 overflow-hidden", className)}>
       <ScrollArea className="h-full">
-        <div ref={contentRef} className="mx-auto max-w-3xl space-y-8 p-6">
+        <div ref={contentRef} className="mx-auto min-w-0 max-w-3xl space-y-8 p-6">
         {messages.map((msg, i) => (
           <div
             key={i}
@@ -151,8 +164,8 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
             </Avatar>
             <div
               className={cn(
-                "rounded-lg px-4 py-3 text-body leading-relaxed",
-                msg.role === "user" && "bg-muted"
+                "min-w-0 rounded-lg px-4 py-3 text-body leading-relaxed",
+                msg.role === "user" ? "bg-muted max-w-[80%]" : "flex-1"
               )}
             >
               {msg.role === "assistant" ? (
@@ -165,13 +178,26 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
                   {msg.thought && (
                     <details className="mb-3">
                       <summary className="text-label cursor-pointer text-muted-foreground hover:text-foreground">
-                        Thinking
+                        {thoughtSummary(msg.stepTimings, false)}
                       </summary>
                       <ThoughtWithTimers thought={msg.thought} timings={msg.stepTimings} isStreaming={false} />
                     </details>
                   )}
-                  <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-3 prose-li:my-1 prose-headings:mt-6 prose-headings:mb-3 prose-th:px-4 prose-th:py-2 prose-td:px-4 prose-td:py-2">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{sanitizeContent(msg.content)}</ReactMarkdown>
+                  <div className="min-w-0">
+                    <div className="prose prose-sm dark:prose-invert max-w-none break-words prose-p:my-3 prose-li:my-1 prose-headings:mt-6 prose-headings:mb-3 prose-th:px-4 prose-th:py-2 prose-td:px-4 prose-td:py-2">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          table: ({ children }) => (
+                            <div className="overflow-x-auto">
+                              <table>{children}</table>
+                            </div>
+                          ),
+                        }}
+                      >
+                        {sanitizeContent(msg.content)}
+                      </ReactMarkdown>
+                    </div>
                   </div>
                   {msg.apps?.map((app, j) => (
                     <div key={j} className="mt-4">
@@ -206,21 +232,34 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
             <Avatar className="h-8 w-8 shrink-0">
               <AvatarFallback>A</AvatarFallback>
             </Avatar>
-            <div className="rounded-lg px-4 py-3 text-body leading-relaxed">
+            <div className="min-w-0 flex-1 rounded-lg px-4 py-3 text-body leading-relaxed">
               {streamingThought && (
                 <details className="mb-3" open={!!streamingThought}>
                   <summary className="text-label cursor-pointer text-muted-foreground hover:text-foreground">
-                    Thinking
+                    {thoughtSummary(stepTimings, true)}
                   </summary>
                   <ThoughtWithTimers thought={streamingThought} timings={stepTimings} isStreaming />
                 </details>
               )}
-              <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-3 prose-li:my-1 prose-headings:mt-6 prose-headings:mb-3 prose-th:px-4 prose-th:py-2 prose-td:px-4 prose-td:py-2">
-                {streamingContent != null ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{sanitizeContent(displayedContent)}</ReactMarkdown>
-                ) : (
-                  <span className="animate-pulse">...</span>
-                )}
+              <div className="min-w-0">
+                <div className="prose prose-sm dark:prose-invert max-w-none break-words prose-p:my-3 prose-li:my-1 prose-headings:mt-6 prose-headings:mb-3 prose-th:px-4 prose-th:py-2 prose-td:px-4 prose-td:py-2">
+                  {streamingContent != null ? (
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        table: ({ children }) => (
+                          <div className="overflow-x-auto">
+                            <table>{children}</table>
+                          </div>
+                        ),
+                      }}
+                    >
+                      {sanitizeContent(displayedContent)}
+                    </ReactMarkdown>
+                  ) : (
+                    <span className="animate-pulse">...</span>
+                  )}
+                </div>
               </div>
               {streamingContent != null && (
                 <span className="ml-0.5 inline-block h-4 w-px animate-pulse bg-foreground" aria-hidden />

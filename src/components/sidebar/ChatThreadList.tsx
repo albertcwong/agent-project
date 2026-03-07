@@ -62,13 +62,13 @@ export function ChatThreadList({
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" side="right">
                   {onPin && (
-                    <DropdownMenuItem onClick={() => onPin(thread.id)}>
+                    <DropdownMenuItem onSelect={() => onPin(thread.id)}>
                       <Pin className={cn("h-4 w-4", thread.pinned && "fill-current")} />
                       {thread.pinned ? "Unpin" : "Pin"}
                     </DropdownMenuItem>
                   )}
                   {onRename && (
-                    <DropdownMenuItem onClick={() => onRename(thread.id, thread.title || "New chat")}>
+                    <DropdownMenuItem onSelect={() => onRename(thread.id, thread.title || "New chat")}>
                       <Pencil className="h-4 w-4" />
                       Rename
                     </DropdownMenuItem>

@@ -128,6 +128,15 @@ Tool errors are classified and hints are appended to the truncated result before
 
 `_user_wants_chart(question)` returns True if the question contains any of: `chart`, `charts`, `visualization`, `visualize`, `graph`, `graphs`, `bar chart`, `pie chart`, `line chart`, `plot`, `visual`, `show as chart`, `show as graph`, `display as chart`, `display as graph`. Only then can `query-datasource` or `get-view-data` yield `app` chunks (and only when `_result_has_chart_data` is true).
 
+## Streaming vs Non-Streaming Path Divergence
+
+The two entry points (`run_agent_loop_stream` and `run_agent_loop`) share most logic but differ in a few areas. This is acceptable technical debt as long as you understand:
+
+- **Evaluation runs** (non-streaming via `run_agent_loop`) test a simplified code path. The evaluation harness does not exercise download chunk extraction, chart handling, or publish result interpretation.
+- **Production debugging** (streaming) relies on structured logs rather than trace objects; the non-streaming path supports `LoopTrace` for evaluation.
+- **Non-streaming lacks:** download chunk extraction, chart/app handling, publish result interpretation, and the graceful max-iterations LLM summary. **Streaming lacks:** trace support.
+- **If evaluation ever needs** downloads, charts, or publish result formatting, either add those to the non-streaming path or switch evaluation to consume the streaming path.
+
 ## Key Constants and Helpers
 
 - **Environment:** `MAX_RESULT_CHARS` (default 50000) — truncation for LLM context; `MAX_AGENT_ITERATIONS` (default 10); `STREAM_READ_TIMEOUT` (default 300) — LLM stream read timeout

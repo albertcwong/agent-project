@@ -14,6 +14,8 @@ STREAM_READ_TIMEOUT = float(os.environ.get("LLM_STREAM_READ_TIMEOUT", "300"))
 
 from agent.intent import classify as classify_intent
 from agent.mcp_client import mcp_session_pool
+from agent.python_exec import execute_python as run_execute_python
+from agent.tools import DOWNLOAD_TOOLS, WRITE_TOOLS, get_tools_for_servers
 from agent.trace import LoopTrace
 
 
@@ -25,34 +27,13 @@ async def _pool_context(server_configs: list[dict], override: dict | None):
     else:
         async with mcp_session_pool(server_configs) as pool:
             yield pool
-from agent.python_exec import execute_python as run_execute_python
-from agent.tools import DOWNLOAD_TOOLS, WRITE_TOOLS, get_tools_for_servers
+
 
 logger = logging.getLogger(__name__)
 
 MAX_AGENT_ITERATIONS = int(os.environ.get("MAX_AGENT_ITERATIONS", "10"))
-
-
-async def _get_endor_headers(base_url: str, api_key: str, provider: str) -> dict[str, str]:
-    """Return headers for LLM proxy. Adds x-endor-token when provider is endor."""
-    headers = {"x-provider": provider}
-    if provider != "endor":
-        return headers
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.get(
-                f"{base_url}/auth/endor/token",
-                headers={"x-api-key": api_key} if api_key != "dummy" else {},
-            )
-            r.raise_for_status()
-            data = r.json()
-            if token := data.get("token"):
-                headers["x-endor-token"] = token
-    except Exception as e:
-        logger.warning("Failed to fetch Endor token: %s", e)
-    return headers
 MAX_RESULT_CHARS = int(os.environ.get("MAX_RESULT_CHARS", "50000"))
-TRUNCATE_MARKER = "\n\n... [truncated]"
+TRUNCATE_MARKER = '\n\n... [truncated for display — full data is available via execute_python using data["rows"]]'
 
 # Tools that return chartable data; metadata-only tools (e.g. get-datasource-metadata) excluded
 _CHART_TOOLS = {"query-datasource", "get-view-data"}
@@ -86,7 +67,7 @@ def _result_has_chart_data(result: str, tool_name: str) -> bool:
     try:
         p = json.loads(s)
         if not isinstance(p, dict):
-            return len(s) > 50
+            return False
         arr = p.get("rows") or p.get("data") or p.get("items") or p.get("datasources") or p.get("workbooks") or []
         if isinstance(arr, list) and len(arr) > 0:
             return True
@@ -114,6 +95,44 @@ def _format_python_result(s: str) -> str:
         return s
 
 
+def _extract_json_object(s: str) -> dict | None:
+    """Extract outermost JSON object from string (handles multi-line pretty-printed)."""
+    idx = s.find("{")
+    if idx < 0:
+        return None
+    sub = s[idx:]
+    depth, i, n = 0, 0, len(sub)
+    in_str, escape, q = False, False, None
+    while i < n:
+        c = sub[i]
+        if escape:
+            escape = False
+            i += 1
+            continue
+        if in_str:
+            if c == "\\":
+                escape = True
+            elif c == q:
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str, q = True, c
+            i += 1
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(sub[: i + 1])
+                except json.JSONDecodeError:
+                    return None
+        i += 1
+    return None
+
+
 def _parse_query_result(result: str) -> dict | None:
     """Parse query-datasource/get-view-data result. Handles multi-line (text + JSON)."""
     if not result or not isinstance(result, str):
@@ -127,10 +146,15 @@ def _parse_query_result(result: str) -> dict | None:
         part = part.strip()
         if part.startswith("{") and part.endswith("}"):
             try:
-                return json.loads(part)
+                parsed = json.loads(part)
+                logger.debug("_parse_query_result used line fallback for %d-char result", len(s))
+                return parsed
             except json.JSONDecodeError:
                 continue
-    return None
+    parsed = _extract_json_object(s)
+    if parsed is not None:
+        logger.debug("_parse_query_result used multi-line fallback for %d-char result", len(s))
+    return parsed
 
 
 def _truncate_for_llm(s: str, max_chars: int = MAX_RESULT_CHARS) -> str:
@@ -138,6 +162,26 @@ def _truncate_for_llm(s: str, max_chars: int = MAX_RESULT_CHARS) -> str:
     if not s or len(s) <= max_chars:
         return s
     return s[:max_chars] + TRUNCATE_MARKER
+
+
+async def _get_endor_headers(base_url: str, api_key: str, provider: str) -> dict[str, str]:
+    """Return headers for LLM proxy. Adds x-endor-token when provider is endor."""
+    headers = {"x-provider": provider}
+    if provider != "endor":
+        return headers
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.get(
+                f"{base_url}/auth/endor/token",
+                headers={"x-api-key": api_key} if api_key != "dummy" else {},
+            )
+            r.raise_for_status()
+            data = r.json()
+            if token := data.get("token"):
+                headers["x-endor-token"] = token
+    except Exception as e:
+        logger.warning("Failed to fetch Endor token: %s", e)
+    return headers
 
 
 def _classify_error(result: str) -> str | None:
@@ -622,6 +666,10 @@ async def run_agent_loop_stream(
                 if call_key in seen_calls and name not in _REDUNDANCY_EXEMPT:
                     result = "You already called this tool with these exact arguments. Use the data you already have or adjust your approach."
                     tool_results.append((name, result))
+                    logger.info(
+                        "traceId=%s iter=%d tool=%s args_keys=%s redundant=True",
+                        trace_id or "(none)", iteration + 1, name, list(args.keys()),
+                    )
                     continue
                 seen_calls.add(call_key)
                 tool_calls_log.append({"name": name, "arguments": args})
@@ -648,8 +696,8 @@ async def run_agent_loop_stream(
                 if name == "execute_python":
                     py_data = args.get("data") or {}
                     if isinstance(py_data, dict):
-                        has_rows = isinstance(py_data.get("rows"), list) and len(py_data.get("rows", [])) > 0
-                        if not has_rows and query_data_cache:
+                        has_real_data = any(isinstance(v, list) and len(v) > 0 for v in py_data.values())
+                        if not has_real_data and query_data_cache:
                             last_data = query_data_cache.get("last") or next(iter(query_data_cache.values()), None)
                             if last_data:
                                 rows = last_data.get("rows") or last_data.get("data") or last_data.get("results") or []
@@ -665,6 +713,10 @@ async def run_agent_loop_stream(
                         logger.exception("Tool %s failed", name)
                         result = "Error: MCP server connection failed. Please try again."
                 tool_results.append((name, result))
+                logger.info(
+                    "traceId=%s iter=%d tool=%s args_keys=%s result_len=%d redundant=False",
+                    trace_id or "(none)", iteration + 1, name, list(args.keys()), len(str(result)),
+                )
                 if name in ("query-datasource", "get-view-data") and not (str(result) or "").strip().startswith("Error:"):
                     parsed = _parse_query_result(result)
                     if isinstance(parsed, dict):
@@ -825,7 +877,11 @@ async def run_agent_loop(
                     result = "Error: MCP server connection failed. Please try again."
                 tc_id = f"call_{uuid.uuid4().hex[:12]}"
                 messages.append({"role": "assistant", "content": "", "tool_calls": [{"id": tc_id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]})
-                messages.append({"role": "tool", "tool_call_id": tc_id, "content": result})
+                clean = _sanitize_tool_result(result)
+                tool_content = _truncate_for_llm(clean)
+                if err_type := _classify_error(clean):
+                    tool_content += _error_hint(err_type)
+                messages.append({"role": "tool", "tool_call_id": tc_id, "content": tool_content})
 
         for i in range(MAX_AGENT_ITERATIONS):
             if trace:
@@ -911,8 +967,8 @@ async def run_agent_loop(
                     if name == "execute_python":
                         py_data = args.get("data") or {}
                         if isinstance(py_data, dict):
-                            has_rows = isinstance(py_data.get("rows"), list) and len(py_data.get("rows", [])) > 0
-                            if not has_rows and query_data_cache:
+                            has_real_data = any(isinstance(v, list) and len(v) > 0 for v in py_data.values())
+                            if not has_real_data and query_data_cache:
                                 last_data = query_data_cache.get("last") or next(iter(query_data_cache.values()), None)
                                 if last_data:
                                     rows = last_data.get("rows") or last_data.get("data") or last_data.get("results") or []

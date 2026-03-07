@@ -19,13 +19,14 @@ def evaluate_efficiency(
             f"Exceeded max iterations: {len(tool_calls)} > {max_iterations}"
         )
 
-    # Redundant calls: same tool + same key args
+    # Redundant calls: same tool + same key args. Exempt discovery/metadata re-reads.
+    EXEMPT_FROM_REDUNDANCY = {"get-datasource-metadata", "list-datasources", "search-content"}
     seen: set[tuple] = set()
     for tc in tool_calls:
         name = tc.get("name", "")
         args = tc.get("arguments") or {}
         key = (name, _args_key(args))
-        if key in seen:
+        if key in seen and name not in EXEMPT_FROM_REDUNDANCY:
             results["pass"] = False
             results["errors"].append(f"Redundant call: {name} with same args")
         seen.add(key)

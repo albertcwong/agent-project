@@ -5,6 +5,8 @@ import { useSearchParams } from "next/navigation";
 import { useThreads } from "@/hooks/useThreads";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { ChatContainer } from "@/components/chat/ChatContainer";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { getConnectedMcpServers, getMcpTokens, getAgentStreaming, getWriteConfirmationScope, setWriteConfirmationScope } from "@/lib/threads";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -128,53 +130,21 @@ function ChatPageContent() {
     create();
   };
 
+  const [renameDialog, setRenameDialog] = useState<{ id: string; currentTitle: string } | null>(null);
+  const [renameInput, setRenameInput] = useState("");
+
   const handleRenameThread = (id: string, currentTitle: string) => {
-    // #region agent log
-    fetch("http://127.0.0.1:7597/ingest/a3c5ee10-7c43-4948-a3a4-7f0d0cdfa022", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "45b476" },
-      body: JSON.stringify({
-        sessionId: "45b476",
-        location: "page.tsx:handleRenameThread:entry",
-        message: "handleRenameThread invoked",
-        data: { id, currentTitle },
-        timestamp: Date.now(),
-        hypothesisId: "H1",
-      }),
-    }).catch(() => {});
-    // #endregion
-    const name = window.prompt("Rename chat", currentTitle);
-    // #region agent log
-    fetch("http://127.0.0.1:7597/ingest/a3c5ee10-7c43-4948-a3a4-7f0d0cdfa022", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "45b476" },
-      body: JSON.stringify({
-        sessionId: "45b476",
-        location: "page.tsx:handleRenameThread:afterPrompt",
-        message: "after window.prompt",
-        data: { name, nameIsNull: name === null, nameTrimmed: name != null ? name.trim() : null },
-        timestamp: Date.now(),
-        hypothesisId: "H2",
-      }),
-    }).catch(() => {});
-    // #endregion
-    if (name != null && name.trim()) {
-      // #region agent log
-      fetch("http://127.0.0.1:7597/ingest/a3c5ee10-7c43-4948-a3a4-7f0d0cdfa022", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "45b476" },
-        body: JSON.stringify({
-          sessionId: "45b476",
-          location: "page.tsx:handleRenameThread:callingUpdateTitle",
-          message: "calling updateTitle",
-          data: { id, newTitle: name.trim() },
-          timestamp: Date.now(),
-          hypothesisId: "H3",
-        }),
-      }).catch(() => {});
-      // #endregion
-      updateTitle(id, name.trim());
+    setRenameInput(currentTitle);
+    setRenameDialog({ id, currentTitle });
+  };
+
+  const handleRenameConfirm = () => {
+    if (!renameDialog) return;
+    const trimmed = renameInput.trim();
+    if (trimmed) {
+      updateTitle(renameDialog.id, trimmed);
     }
+    setRenameDialog(null);
   };
 
   const [sending, setSending] = useState(false);
@@ -578,6 +548,38 @@ function ChatPageContent() {
           </div>
         </div>
       )}
+      <Dialog open={!!renameDialog} onOpenChange={(open) => !open && setRenameDialog(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename chat</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-4">
+            <Input
+              value={renameInput}
+              onChange={(e) => setRenameInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleRenameConfirm()}
+              placeholder="Chat name"
+              autoFocus
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRenameDialog(null)}
+                className="text-body rounded-md border px-4 py-2 font-medium hover:bg-muted"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRenameConfirm}
+                className="text-body rounded-md bg-primary px-4 py-2 font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                Rename
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
       {oauthError && (
         <div className="flex items-center justify-between gap-4 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive">
           <span>{oauthError}</span>

@@ -30,17 +30,35 @@ function buildUserContent(
   return parts;
 }
 
+async function getEndorHeaders(baseUrl: string, apiKey: string, provider: string): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { "x-provider": provider };
+  if (provider !== "endor") return headers;
+  try {
+    const r = await fetch(`${baseUrl}/auth/endor/token`, {
+      headers: apiKey !== "dummy" ? { "x-api-key": apiKey } : {},
+    });
+    if (!r.ok) return headers;
+    const data = await r.json();
+    if (data?.token) headers["x-endor-token"] = data.token;
+  } catch {
+    /* ignore */
+  }
+  return headers;
+}
+
 export async function POST(req: Request) {
   try {
     const { messages, model, provider, attachments } = await req.json();
     const baseUrl = (process.env.LLM_PROXY_URL || "http://localhost:8000").replace(/\/$/, "");
     const apiKey = process.env.LLM_PROXY_API_KEY || "dummy";
     const defaultProvider = process.env.LLM_PROXY_PROVIDER || "openai";
+    const p = provider || defaultProvider;
+    const defaultHeaders = await getEndorHeaders(baseUrl, apiKey, p);
 
     const client = new OpenAI({
       baseURL: `${baseUrl}/v1`,
       apiKey,
-      defaultHeaders: { "x-provider": provider || defaultProvider },
+      defaultHeaders,
     });
 
     const filtered = (messages || []).filter((m: { role?: string; content?: string }) => m.role && m.content);

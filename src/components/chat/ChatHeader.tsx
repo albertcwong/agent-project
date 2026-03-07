@@ -37,13 +37,13 @@ export function ChatHeader({ modelName, title, threadId, pinned, onPin, onRename
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             {onPin && (
-              <DropdownMenuItem onClick={() => onPin(threadId)}>
+              <DropdownMenuItem onSelect={() => onPin(threadId!)}>
                 <Pin className={cn("h-4 w-4", pinned && "fill-current")} />
                 {pinned ? "Unpin" : "Pin"}
               </DropdownMenuItem>
             )}
             {onRename && (
-              <DropdownMenuItem onClick={() => onRename(threadId, title)}>
+              <DropdownMenuItem onSelect={() => onRename(threadId!, title)}>
                 <Pencil className="h-4 w-4" />
                 Rename
               </DropdownMenuItem>
