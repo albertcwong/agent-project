@@ -53,7 +53,7 @@ EXECUTE_PYTHON_TOOL = {
                 "code": {"type": "string", "description": "Python code. Use the `data` dict for input datasets."},
                 "data": {
                     "type": "object",
-                    "description": "Named datasets from query results. E.g. {\"sales\": [{\"Month\":\"2023-01\",\"Sales\":10000}]}",
+                    "description": "Named datasets or empty {} to use last query result (injected as {\"rows\": [...]}). Use df = pd.DataFrame(data[\"rows\"]) or data[\"key\"].",
                 },
             },
             "required": ["code"],

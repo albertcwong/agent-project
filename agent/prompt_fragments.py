@@ -11,7 +11,8 @@ ADDENDUM_QUERY_ANALYTICS = """
 
 ### How to use Python
 - Always query Tableau first. Do not fabricate data.
-- Pass data: `data: { "dataset_name": [rows from query] }`. Access in code: `df = pd.DataFrame(data["dataset_name"])`.
+- When you pass empty or placeholder data, the system injects the last query result as `data["rows"]`. Use `df = pd.DataFrame(data["rows"])` — do not use `pd.DataFrame(data)`.
+- When you pass named datasets: `data: { "sales": [rows] }`. Access: `df = pd.DataFrame(data["sales"])`.
 - Available: pandas, numpy, scipy, statsmodels, sklearn. Do not import other libraries.
 - Your code must `print()` its final output; the printed output is returned to you.
 - For forecasting: aggregate to the appropriate grain (monthly unless user specifies) before calling Python.
@@ -24,15 +25,15 @@ ADDENDUM_QUERY_ANALYTICS = """
 ## Query construction (Tableau VDS)
 - Queries use `fieldCaption` from metadata (not internal field names). Get metadata with `get-datasource-metadata` first.
 - Dimensions: `{ "fieldCaption": "Category" }` in `query.fields`. Measures require `function`: SUM, AVG, COUNT, COUNTD, MIN, MAX, MEDIAN, STDEV, VAR.
-- Filters: `query.filters` array. filterType: SET (dimensions), QUANTITATIVE_NUMERICAL (measures), QUANTITATIVE_DATE (dates).
+- Filters: `query.filters` array. filterType: SET (dimensions), QUANTITATIVE_NUMERICAL (measures), QUANTITATIVE_DATE (dates). For SET filters, `field` must be an object: `{ "fieldCaption": "Region" }`, not a string.
 - Date filters: use `minDate`/`maxDate` in ISO format (YYYY-MM-DD). For relative dates (e.g. "last year"), compute the actual date range.
 - If "field not found" or similar error: re-check metadata; fieldCaption may differ from user wording (e.g. "revenue" vs "Sales Amount"). Use the closest match and attempt the query; if it fails, re-check metadata for the correct fieldCaption.
 - Prefer aggregation over raw rows. When unsure about volume, profile with COUNT first.
 
 ### Query construction patterns
 - **Aggregation query** (e.g. "total sales by region"): dimension `{ "fieldCaption": "Region" }` + measure `{ "fieldCaption": "Sales", "function": "SUM" }` in query.fields.
-- **Top-N query** (e.g. "top 10 customers by revenue"): dimension `{ "fieldCaption": "Customer Name" }` + measure `{ "fieldCaption": "Revenue", "function": "SUM" }` + sort descending on the measure + limit 10.
-- **Filtered query** (e.g. "sales for East region only"): include the filter dimension in query.fields if the user wants to see it; add to query.filters: `{ "field": "Region", "filterType": "SET", "values": ["East"] }`.
+- **Top-N query** (e.g. "top 10 customers by revenue"): dimension `{ "fieldCaption": "Customer Name" }` + measure `{ "fieldCaption": "Revenue", "function": "SUM" }` + sort descending on the measure + limit 10. Or use filterType TOP with field as object.
+- **Filtered query** (e.g. "sales for East region only"): include the filter dimension in query.fields if the user wants to see it; add to query.filters: `{ "field": { "fieldCaption": "Region" }, "filterType": "SET", "values": ["East"] }`.
 
 ## Tool selection
 - `query-datasource`: Use for custom queries when you need specific fields, filters, or aggregations.

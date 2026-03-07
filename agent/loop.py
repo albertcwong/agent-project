@@ -31,6 +31,26 @@ from agent.tools import DOWNLOAD_TOOLS, WRITE_TOOLS, get_tools_for_servers
 logger = logging.getLogger(__name__)
 
 MAX_AGENT_ITERATIONS = int(os.environ.get("MAX_AGENT_ITERATIONS", "10"))
+
+
+async def _get_endor_headers(base_url: str, api_key: str, provider: str) -> dict[str, str]:
+    """Return headers for LLM proxy. Adds x-endor-token when provider is endor."""
+    headers = {"x-provider": provider}
+    if provider != "endor":
+        return headers
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.get(
+                f"{base_url}/auth/endor/token",
+                headers={"x-api-key": api_key} if api_key != "dummy" else {},
+            )
+            r.raise_for_status()
+            data = r.json()
+            if token := data.get("token"):
+                headers["x-endor-token"] = token
+    except Exception as e:
+        logger.warning("Failed to fetch Endor token: %s", e)
+    return headers
 MAX_RESULT_CHARS = int(os.environ.get("MAX_RESULT_CHARS", "50000"))
 TRUNCATE_MARKER = "\n\n... [truncated]"
 
@@ -94,6 +114,25 @@ def _format_python_result(s: str) -> str:
         return s
 
 
+def _parse_query_result(result: str) -> dict | None:
+    """Parse query-datasource/get-view-data result. Handles multi-line (text + JSON)."""
+    if not result or not isinstance(result, str):
+        return None
+    s = result.strip()
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    for part in reversed(s.split("\n")):
+        part = part.strip()
+        if part.startswith("{") and part.endswith("}"):
+            try:
+                return json.loads(part)
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
 def _truncate_for_llm(s: str, max_chars: int = MAX_RESULT_CHARS) -> str:
     """Truncate tool result for LLM context to avoid overflow."""
     if not s or len(s) <= max_chars:
@@ -106,6 +145,8 @@ def _classify_error(result: str) -> str | None:
     if not result or not result.strip().startswith("Error:"):
         return None
     r = result.lower()
+    if "empty code" in r:
+        return "empty_code"
     if "401" in r or "unauthorized" in r:
         return "auth"
     if "403" in r or "forbidden" in r:
@@ -124,6 +165,7 @@ def _classify_error(result: str) -> str | None:
 def _error_hint(error_type: str) -> str:
     """Return a hint for the agent based on error type."""
     hints = {
+        "empty_code": " (Provide Python code in the code parameter. Use df = pd.DataFrame(data[\"rows\"]) for the injected query result.)",
         "auth": " (Check authentication; user may need to reconnect in Settings.)",
         "not_found": " (Verify the resource ID or name exists.)",
         "validation_field": " (Re-check get-datasource-metadata for correct fieldCaption.)",
@@ -309,11 +351,11 @@ def _update_conversation_state(
     """Update conversation state from successful tool call."""
     out = dict(state) if state else {}
     if tool_name == "get-datasource-metadata":
-        ds_id = args.get("datasourceId") or args.get("datasource_id")
+        ds_id = args.get("datasourceLuid") or args.get("datasourceId") or args.get("datasource_id")
         if ds_id:
             out["currentDatasourceId"] = str(ds_id)
     elif tool_name == "query-datasource" and not (result or "").strip().startswith("Error:"):
-        ds_id = args.get("datasourceId") or args.get("datasource_id")
+        ds_id = args.get("datasourceLuid") or args.get("datasourceId") or args.get("datasource_id")
         if ds_id:
             out["currentDatasourceId"] = str(ds_id)
         q = args.get("query") or args.get("queryText")
@@ -388,10 +430,11 @@ async def run_agent_loop_stream(
 
         base_url = os.environ.get("LLM_PROXY_URL", "http://localhost:8000").rstrip("/")
         api_key = os.environ.get("LLM_PROXY_API_KEY", "dummy")
+        headers = await _get_endor_headers(base_url, api_key, provider)
         client = AsyncOpenAI(
             base_url=f"{base_url}/v1",
             api_key=api_key,
-            default_headers={"x-provider": provider},
+            default_headers=headers,
             timeout=httpx.Timeout(60.0, read=STREAM_READ_TIMEOUT),
         )
         model = model or DEFAULT_MODEL
@@ -605,14 +648,13 @@ async def run_agent_loop_stream(
                 if name == "execute_python":
                     py_data = args.get("data") or {}
                     if isinstance(py_data, dict):
-                        has_real_data = any(isinstance(v, list) and v for v in py_data.values())
-                        if not has_real_data and query_data_cache:
+                        has_rows = isinstance(py_data.get("rows"), list) and len(py_data.get("rows", [])) > 0
+                        if not has_rows and query_data_cache:
                             last_data = query_data_cache.get("last") or next(iter(query_data_cache.values()), None)
                             if last_data:
-                                rows = last_data.get("rows") or last_data.get("data") or []
+                                rows = last_data.get("rows") or last_data.get("data") or last_data.get("results") or []
                                 if isinstance(rows, list) and rows:
-                                    key = next(iter(py_data.keys()), "data") if py_data else "data"
-                                    py_data = {key: rows}
+                                    py_data = {"rows": rows}
                     result = run_execute_python(args.get("code", ""), py_data)
                 else:
                     cfg = tool_server_map.get(name) or server_configs[0]
@@ -624,13 +666,11 @@ async def run_agent_loop_stream(
                         result = "Error: MCP server connection failed. Please try again."
                 tool_results.append((name, result))
                 if name in ("query-datasource", "get-view-data") and not (str(result) or "").strip().startswith("Error:"):
-                    try:
-                        parsed = json.loads(result)
-                        ds_id = str(args.get("datasourceId") or args.get("viewId") or "last")
+                    parsed = _parse_query_result(result)
+                    if isinstance(parsed, dict):
+                        ds_id = str(args.get("datasourceLuid") or args.get("datasourceId") or args.get("viewId") or "last")
                         query_data_cache[ds_id] = parsed
                         query_data_cache["last"] = parsed
-                    except (json.JSONDecodeError, TypeError):
-                        pass
 
             for tc, (name, result) in zip(msg_tool_calls, tool_results):
                 clean = _format_python_result(result) if name == "execute_python" else _sanitize_tool_result(result)
@@ -643,7 +683,7 @@ async def run_agent_loop_stream(
                 if updated is not None:
                     conv_state = updated
                 if name in ("query-datasource", "get-view-data"):
-                    ds_id = args.get("datasourceId") or args.get("viewId")
+                    ds_id = args.get("datasourceLuid") or args.get("datasourceId") or args.get("viewId")
                     if ds_id and not any(s.get("id") == str(ds_id) for s in sources):
                         sources.append({"id": str(ds_id), "type": name, "tool": name})
                 if name in DOWNLOAD_TOOLS:
@@ -744,10 +784,11 @@ async def run_agent_loop(
 
         base_url = os.environ.get("LLM_PROXY_URL", "http://localhost:8000").rstrip("/")
         api_key = os.environ.get("LLM_PROXY_API_KEY", "dummy")
+        headers = await _get_endor_headers(base_url, api_key, provider)
         client = AsyncOpenAI(
             base_url=f"{base_url}/v1",
             api_key=api_key,
-            default_headers={"x-provider": provider},
+            default_headers=headers,
             timeout=httpx.Timeout(60.0, read=STREAM_READ_TIMEOUT),
         )
         model = model or DEFAULT_MODEL
@@ -870,14 +911,13 @@ async def run_agent_loop(
                     if name == "execute_python":
                         py_data = args.get("data") or {}
                         if isinstance(py_data, dict):
-                            has_real_data = any(isinstance(v, list) and v for v in py_data.values())
-                            if not has_real_data and query_data_cache:
+                            has_rows = isinstance(py_data.get("rows"), list) and len(py_data.get("rows", [])) > 0
+                            if not has_rows and query_data_cache:
                                 last_data = query_data_cache.get("last") or next(iter(query_data_cache.values()), None)
                                 if last_data:
-                                    rows = last_data.get("rows") or last_data.get("data") or []
+                                    rows = last_data.get("rows") or last_data.get("data") or last_data.get("results") or []
                                     if isinstance(rows, list) and rows:
-                                        key = next(iter(py_data.keys()), "data") if py_data else "data"
-                                        py_data = {key: rows}
+                                        py_data = {"rows": rows}
                         result = run_execute_python(args.get("code", ""), py_data)
                     else:
                         cfg = tool_server_map.get(name) or server_configs[0]
@@ -891,13 +931,11 @@ async def run_agent_loop(
                     if trace:
                         trace.add_tool_call(name, args, str(result), was_redundant=False)
                     if name in ("query-datasource", "get-view-data") and not (str(result) or "").strip().startswith("Error:"):
-                        try:
-                            parsed = json.loads(result)
-                            ds_id = str(args.get("datasourceId") or args.get("viewId") or "last")
+                        parsed = _parse_query_result(result)
+                        if isinstance(parsed, dict):
+                            ds_id = str(args.get("datasourceLuid") or args.get("datasourceId") or args.get("viewId") or "last")
                             query_data_cache[ds_id] = parsed
                             query_data_cache["last"] = parsed
-                        except (json.JSONDecodeError, TypeError):
-                            pass
 
             for tc, (name, result) in zip(msg.tool_calls, tool_results):
                 content = _format_python_result(result) if name == "execute_python" else _sanitize_tool_result(result)
@@ -909,7 +947,7 @@ async def run_agent_loop(
                 if updated is not None:
                     conv_state = updated
                 if name in ("query-datasource", "get-view-data"):
-                    ds_id = tc_args.get("datasourceId") or tc_args.get("viewId")
+                    ds_id = tc_args.get("datasourceLuid") or tc_args.get("datasourceId") or tc_args.get("viewId")
                     if ds_id and not any(s.get("id") == str(ds_id) for s in sources):
                         sources.append({"id": str(ds_id), "type": name, "tool": name})
                 tool_content = _truncate_for_llm(content)
