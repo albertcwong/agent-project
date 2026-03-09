@@ -104,6 +104,26 @@ uv run python evaluation/history.py regressions [--last 5]
 | `flaky` | Cases with inconsistent results (min 5 runs) |
 | `regressions` | Recently broken cases (passed before, failing now) |
 
+### Resuming interrupted runs
+
+If an eval is cut short (Ctrl+C, crash), the run stays `in_progress` with partial results saved. Resume with `--resume <run_id>`:
+
+```bash
+# Find run_id of interrupted run (main harness)
+sqlite3 evaluation/eval_results.db < evaluation/queries/in_progress_pass_rate.sql
+
+# Find run_id of interrupted WTQ run
+sqlite3 evaluation/eval_results.db < evaluation/queries/wtq_in_progress_pass_rate.sql
+
+# Resume main harness
+uv run python evaluation/run_eval.py --resume abc12345
+
+# Resume WTQ
+uv run python -m evaluation.wtq ./WikiTableQuestions --resume abc12345
+```
+
+Resume requires persistence (do not use `--no-persist`). Use the same `--cases`, `--filter`, `--split`, and `--limit` as the original run so the case set matches.
+
 ### Programmatic Access
 
 ```python
@@ -168,6 +188,7 @@ uv run python -m evaluation.wtq ./WikiTableQuestions --split train --limit 20
 | `--limit` | Max questions to run |
 | `--model` | LLM model (e.g. gpt-4o, gpt-4o-mini) |
 | `--verbose` | Print gold vs agent, table columns, query-datasource args, and full trace on failures |
+| `--resume` | Resume interrupted run by run_id |
 | `--verify-only` | Validate adapter on first table (list, metadata, sample query) and exit |
 
 Target: ≥40% pass on 50 questions as baseline before expanding to full test set.

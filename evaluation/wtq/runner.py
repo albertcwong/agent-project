@@ -98,7 +98,11 @@ async def run_wtq_eval(
     limit: int | None = None,
     verbose: bool = False,
     persist: bool = True,
+    resume_run_id: str | None = None,
 ) -> list[dict]:
+    if resume_run_id and not persist:
+        raise ValueError("--resume requires persistence; do not use --no-persist")
+
     questions, tables = load_wtq_dataset(data_dir, split=split, limit=limit)
 
     if not questions:
@@ -107,19 +111,44 @@ async def run_wtq_eval(
 
     print(f"Loaded {len(questions)} questions across {len(tables)} tables")
 
-    run_id = str(uuid.uuid4())[:8]
-    start_time = time.monotonic()
-    if persist:
-        from evaluation.persistence import start_run
-        start_run(
-            run_id=run_id,
-            model=model,
-            provider=provider,
-            system_prompt=get_system_prompt(""),
-            metadata={"eval_type": "wtq", "split": split},
-        )
+    if resume_run_id:
+        from evaluation.persistence import get_resumable_run, get_run_results
+        run_meta = get_resumable_run(resume_run_id)
+        if not run_meta:
+            raise ValueError(
+                f"Run {resume_run_id} not found or not resumable. "
+                "Check with: sqlite3 evaluation/eval_results.db < evaluation/queries/wtq_in_progress_pass_rate.sql"
+            )
+        meta = json.loads(run_meta.get("metadata") or "{}")
+        if meta.get("eval_type") != "wtq":
+            raise ValueError(f"Run {resume_run_id} is not a WTQ run (eval_type={meta.get('eval_type')})")
+        existing_results = get_run_results(resume_run_id)
+        run_id = resume_run_id
+        results = list(existing_results)
+        completed_ids = {r["id"] for r in existing_results}
+        questions = [q for q in questions if q["id"] not in completed_ids]
+        if not questions:
+            total_seconds = sum(r.get("elapsed_seconds") or 0 for r in results)
+            from evaluation.persistence import complete_run
+            complete_run(run_id, total_seconds, results)
+            passed = sum(1 for r in results if r["pass"])
+            print(f"Resume complete: all {len(results)} cases done ({passed} passed).", flush=True)
+            return results
+        print(f"Resuming run {run_id}: {len(existing_results)} done, {len(questions)} remaining.", flush=True)
+    else:
+        run_id = str(uuid.uuid4())[:8]
+        results = []
+        if persist:
+            from evaluation.persistence import start_run
+            start_run(
+                run_id=run_id,
+                model=model,
+                provider=provider,
+                system_prompt=get_system_prompt(""),
+                metadata={"eval_type": "wtq", "split": split},
+            )
 
-    results = []
+    start_time = time.monotonic()
     try:
         for i, q in enumerate(questions):
             ds_id = q.get("datasource_id", "")
@@ -223,7 +252,7 @@ async def run_wtq_eval(
                     print("    --- Trace ---")
                     print(trace.format())
 
-        total_seconds = time.monotonic() - start_time
+        total_seconds = sum(r.get("elapsed_seconds") or 0 for r in results)
         if persist:
             from evaluation.persistence import complete_run
             complete_run(run_id, total_seconds, results)

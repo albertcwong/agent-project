@@ -1,7 +1,10 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import TurndownService from "turndown";
 import { Send, Square, Plus, Paperclip } from "lucide-react";
+
+const turndown = new TurndownService({ headingStyle: "atx", bulletListMarker: "-" });
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -35,6 +38,24 @@ export function ChatInput({ onSend, onCancel, onModelChange, agentMode, onAgentM
   const [modelOption, setModelOption] = useState<ModelOption | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingSelectionRef = useRef<number | null>(null);
+
+  const findPrevWordBoundary = (text: string, pos: number): number => {
+    if (pos <= 0) return 0;
+    let i = pos - 1;
+    while (i > 0 && /\s/.test(text[i])) i--;
+    while (i > 0 && !/\s/.test(text[i - 1])) i--;
+    return i;
+  };
+
+  const findNextWordBoundary = (text: string, pos: number): number => {
+    if (pos >= text.length) return text.length;
+    let i = pos;
+    while (i < text.length && /\s/.test(text[i])) i++;
+    while (i < text.length && !/\s/.test(text[i])) i++;
+    return i;
+  };
 
   const handleModelChange = (id: string, provider: string) => {
     setModelOption({ id, provider });
@@ -78,6 +99,66 @@ export function ChatInput({ onSend, onCancel, onModelChange, agentMode, onAgentM
     doSend();
   };
 
+  useEffect(() => {
+    const pos = pendingSelectionRef.current;
+    if (pos != null && textareaRef.current) {
+      pendingSelectionRef.current = null;
+      textareaRef.current.setSelectionRange(pos, pos);
+    }
+  }, [input]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+
+    if (e.altKey) {
+      if (e.key === "ArrowLeft" || e.key === "Backspace") {
+        e.preventDefault();
+        if (e.key === "ArrowLeft") {
+          const pos = findPrevWordBoundary(input, ta.selectionStart);
+          ta.setSelectionRange(pos, pos);
+        } else {
+          const start = findPrevWordBoundary(input, ta.selectionStart);
+          const end = ta.selectionStart;
+          if (start < end) {
+            pendingSelectionRef.current = start;
+            setInput(input.slice(0, start) + input.slice(end));
+          }
+        }
+        return;
+      }
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        const pos = findNextWordBoundary(input, ta.selectionEnd);
+        ta.setSelectionRange(pos, pos);
+        return;
+      }
+    }
+
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      doSend();
+    }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const html = e.clipboardData.getData("text/html");
+    if (!html) return;
+    e.preventDefault();
+    const md = turndown.turndown(html);
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const before = input.slice(0, start);
+    const after = input.slice(end);
+    setInput(before + md + after);
+    requestAnimationFrame(() => {
+      const pos = start + md.length;
+      ta.setSelectionRange(pos, pos);
+    });
+  };
+
   return (
     <form
       onSubmit={handleSubmit}
@@ -116,14 +197,11 @@ export function ChatInput({ onSend, onCancel, onModelChange, agentMode, onAgentM
       )}
       <div className="flex min-h-[2.5rem] flex-1 items-start">
         <textarea
+          ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              doSend();
-            }
-          }}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder="Enter a prompt..."
           disabled={disabled}
           rows={2}

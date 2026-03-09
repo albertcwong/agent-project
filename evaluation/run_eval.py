@@ -22,6 +22,7 @@ async def main():
     parser.add_argument("--provider", "-p", type=str, default="openai", help="LLM provider (default: openai)")
     parser.add_argument("--llm-judge", action="store_true", help="Use LLM-as-judge for answer quality")
     parser.add_argument("--no-persist", action="store_true", help="Skip persisting results to SQLite")
+    parser.add_argument("--resume", type=str, default=None, help="Resume interrupted run by run_id")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     args = parser.parse_args()
 
@@ -39,6 +40,7 @@ async def main():
         provider=args.provider,
         verbose=args.verbose,
         persist=not args.no_persist,
+        resume_run_id=args.resume,
     )
     print(format_summary(results), flush=True)
     sys.exit(0 if all(r.get("pass") for r in results) else 1)

@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowUp } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronDown } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,43 @@ import type { McpApp, FileDownload } from "@/lib/threads";
 
 function sanitizeContent(s: string): string {
   return s.replace(/\s*unhandled errors in a TaskGroup[^\n]*/g, "").trimEnd();
+}
+
+const PROSE_CLASSES = [
+  "prose prose-sm dark:prose-invert max-w-none break-words",
+  "[&_h1]:text-2xl [&_h1]:font-bold [&_h1]:mt-6 [&_h1]:mb-3",
+  "[&_h2]:text-xl [&_h2]:font-semibold [&_h2]:mt-6 [&_h2]:mb-3",
+  "[&_h3]:text-lg [&_h3]:font-semibold [&_h3]:mt-5 [&_h3]:mb-2",
+  "[&_h4]:text-base [&_h4]:font-semibold",
+  "[&_ul]:list-disc [&_ul]:pl-6",
+  "[&_ol]:list-decimal [&_ol]:pl-6",
+  "[&_li]:my-1",
+  "[&_p]:my-3",
+  "[&_blockquote]:border-l-4 [&_blockquote]:border-muted-foreground [&_blockquote]:pl-4 [&_blockquote]:italic",
+  "[&_code]:rounded [&_code]:bg-muted [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:text-sm",
+  "[&_pre]:rounded-lg [&_pre]:bg-muted [&_pre]:p-4 [&_pre]:overflow-x-auto",
+  "[&_table]:w-full [&_table]:border-collapse",
+  "[&_th]:border [&_th]:border-border [&_th]:px-4 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_th]:bg-muted/50",
+  "[&_td]:border [&_td]:border-border [&_td]:px-4 [&_td]:py-2",
+];
+
+function MarkdownBody({ content }: { content: string }) {
+  return (
+    <div className={cn("min-w-0", PROSE_CLASSES)}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          table: ({ children }) => (
+            <div className="min-w-0 max-w-full overflow-x-auto">
+              <table>{children}</table>
+            </div>
+          ),
+        }}
+      >
+        {sanitizeContent(content)}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 function formatDuration(ms: number): string {
@@ -107,30 +144,103 @@ function ThoughtWithTimers({
 export function ChatMessages({ messages, streamingContent, streamingThought, stepTimings, className }: ChatMessagesProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const isProgrammaticScrollRef = useRef(false);
+  const programmaticScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const userTookControlRef = useRef(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const [mode, setMode] = useState<"passive" | "active">("passive");
   const displayedContent = useStreamingDisplay(streamingContent ?? null);
 
   useEffect(() => {
     const el = bottomRef.current;
-    const viewport = contentRef.current?.closest("[data-slot=scroll-area]")?.querySelector("[data-slot=scroll-area-viewport]");
-    if (!el || !viewport) return;
+    const vp = contentRef.current?.closest("[data-slot=scroll-area]")?.querySelector("[data-slot=scroll-area-viewport]");
+    if (!el || !vp) return;
     const observer = new IntersectionObserver(
       ([entry]) => setIsAtBottom(entry.isIntersecting),
-      { root: viewport, rootMargin: "20px", threshold: 0 }
+      { root: vp, rootMargin: "20px", threshold: 0 }
     );
     observer.observe(el);
     return () => observer.disconnect();
   }, [messages.length, streamingContent != null, streamingThought != null]);
 
+  useEffect(() => {
+    if (isAtBottom && mode === "active") {
+      userTookControlRef.current = false;
+      setMode("passive");
+    }
+  }, [isAtBottom, mode]);
+
+  const wasStreamingRef = useRef(false);
+  useEffect(() => {
+    const isStreaming = streamingContent != null || streamingThought != null;
+    if (isStreaming && !wasStreamingRef.current) userTookControlRef.current = false;
+    wasStreamingRef.current = isStreaming;
+  }, [streamingContent != null, streamingThought != null]);
+
+  useEffect(() => () => {
+    if (programmaticScrollTimeoutRef.current) {
+      clearTimeout(programmaticScrollTimeoutRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    const vp = contentRef.current?.closest("[data-slot=scroll-area]")?.querySelector("[data-slot=scroll-area-viewport]");
+    if (!vp) return;
+    const onScroll = () => {
+      if (!isProgrammaticScrollRef.current) {
+        userTookControlRef.current = true;
+        setMode("active");
+      }
+    };
+    const onWheel = () => {
+      userTookControlRef.current = true;
+      setMode("active");
+    };
+    vp.addEventListener("scroll", onScroll, { passive: true });
+    vp.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      vp.removeEventListener("scroll", onScroll);
+      vp.removeEventListener("wheel", onWheel);
+    };
+  }, [messages.length, streamingContent != null, streamingThought != null]);
+
+  const enterActiveOnClick = useCallback(() => {
+    userTookControlRef.current = true;
+    setMode("active");
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    if (!bottomRef.current) return;
+    if (programmaticScrollTimeoutRef.current) clearTimeout(programmaticScrollTimeoutRef.current);
+    isProgrammaticScrollRef.current = true;
+    bottomRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+    programmaticScrollTimeoutRef.current = setTimeout(() => {
+      programmaticScrollTimeoutRef.current = null;
+      isProgrammaticScrollRef.current = false;
+    }, 400);
+  }, []);
+
   const scrollThrottleRef = useRef(0);
   useEffect(() => {
-    if (!isAtBottom || !bottomRef.current) return;
+    if (userTookControlRef.current || mode !== "passive" || !isAtBottom || !bottomRef.current) return;
     const el = bottomRef.current;
     const now = Date.now();
     if ((streamingContent != null || streamingThought != null) && now - scrollThrottleRef.current < 60) return;
     scrollThrottleRef.current = now;
+    if (programmaticScrollTimeoutRef.current) clearTimeout(programmaticScrollTimeoutRef.current);
+    isProgrammaticScrollRef.current = true;
     el.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, streamingContent, isAtBottom]);
+    programmaticScrollTimeoutRef.current = setTimeout(() => {
+      programmaticScrollTimeoutRef.current = null;
+      isProgrammaticScrollRef.current = false;
+    }, 400);
+    return () => {
+      if (programmaticScrollTimeoutRef.current) {
+        clearTimeout(programmaticScrollTimeoutRef.current);
+        programmaticScrollTimeoutRef.current = null;
+      }
+    };
+  }, [messages, streamingContent, isAtBottom, mode]);
 
   if (messages.length === 0 && !streamingContent && !streamingThought) {
     return (
@@ -139,11 +249,6 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
       </div>
     );
   }
-
-  const scrollToTop = () => {
-    const viewport = contentRef.current?.closest("[data-slot=scroll-area]")?.querySelector("[data-slot=scroll-area-viewport]");
-    viewport?.scrollTo({ top: 0, behavior: "smooth" });
-  };
 
   return (
     <div className={cn("relative min-h-0 flex-1 overflow-hidden", className)}>
@@ -167,6 +272,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
                 "min-w-0 rounded-lg px-4 py-3 text-body leading-relaxed",
                 msg.role === "user" ? "bg-muted max-w-[80%]" : "flex-1"
               )}
+              {...(msg.role === "assistant" && { onPointerDown: enterActiveOnClick })}
             >
               {msg.role === "assistant" ? (
                 <>
@@ -176,29 +282,14 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
                     </p>
                   )}
                   {msg.thought && (
-                    <details className="mb-3">
+                    <details className="mb-3" open>
                       <summary className="text-label cursor-pointer text-muted-foreground hover:text-foreground">
                         {thoughtSummary(msg.stepTimings, false)}
                       </summary>
                       <ThoughtWithTimers thought={msg.thought} timings={msg.stepTimings} isStreaming={false} />
                     </details>
                   )}
-                  <div className="min-w-0">
-                    <div className="prose prose-sm dark:prose-invert max-w-none break-words prose-p:my-3 prose-li:my-1 prose-headings:mt-6 prose-headings:mb-3 prose-th:px-4 prose-th:py-2 prose-td:px-4 prose-td:py-2">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          table: ({ children }) => (
-                            <div className="overflow-x-auto">
-                              <table>{children}</table>
-                            </div>
-                          ),
-                        }}
-                      >
-                        {sanitizeContent(msg.content)}
-                      </ReactMarkdown>
-                    </div>
-                  </div>
+                  <MarkdownBody content={msg.content} />
                   {msg.apps?.map((app, j) => (
                     <div key={j} className="mt-4">
                       <McpAppFrame
@@ -222,7 +313,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
                   ))}
                 </>
               ) : (
-                <p className="text-body whitespace-pre-wrap">{sanitizeContent(msg.content)}</p>
+                <MarkdownBody content={msg.content} />
               )}
             </div>
           </div>
@@ -232,7 +323,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
             <Avatar className="h-8 w-8 shrink-0">
               <AvatarFallback>A</AvatarFallback>
             </Avatar>
-            <div className="min-w-0 flex-1 rounded-lg px-4 py-3 text-body leading-relaxed">
+            <div className="min-w-0 flex-1 rounded-lg px-4 py-3 text-body leading-relaxed" onPointerDown={enterActiveOnClick}>
               {streamingThought && (
                 <details className="mb-3" open={!!streamingThought}>
                   <summary className="text-label cursor-pointer text-muted-foreground hover:text-foreground">
@@ -242,24 +333,11 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
                 </details>
               )}
               <div className="min-w-0">
-                <div className="prose prose-sm dark:prose-invert max-w-none break-words prose-p:my-3 prose-li:my-1 prose-headings:mt-6 prose-headings:mb-3 prose-th:px-4 prose-th:py-2 prose-td:px-4 prose-td:py-2">
-                  {streamingContent != null ? (
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={{
-                        table: ({ children }) => (
-                          <div className="overflow-x-auto">
-                            <table>{children}</table>
-                          </div>
-                        ),
-                      }}
-                    >
-                      {sanitizeContent(displayedContent)}
-                    </ReactMarkdown>
-                  ) : (
-                    <span className="animate-pulse">...</span>
-                  )}
-                </div>
+                {streamingContent != null ? (
+                  <MarkdownBody content={displayedContent} />
+                ) : (
+                  <span className="animate-pulse">...</span>
+                )}
               </div>
               {streamingContent != null && (
                 <span className="ml-0.5 inline-block h-4 w-px animate-pulse bg-foreground" aria-hidden />
@@ -270,15 +348,27 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
         <div ref={bottomRef} />
         </div>
       </ScrollArea>
-      {!isAtBottom && (
+      {mode === "active" && (streamingContent != null || streamingThought != null) && (
+        <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2">
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            className="flex items-center gap-1.5 rounded-full bg-muted/90 px-3 py-1.5 text-caption text-muted-foreground shadow-md transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+            New content below
+          </button>
+        </div>
+      )}
+      {!isAtBottom && !(mode === "active" && (streamingContent != null || streamingThought != null)) && (
         <Button
           variant="secondary"
           size="icon"
           className="absolute bottom-4 right-12 z-10 h-8 w-8 shadow-md"
-          onClick={scrollToTop}
-          aria-label="Scroll to top"
+          onClick={scrollToBottom}
+          aria-label="Jump to latest"
         >
-          <ArrowUp className="h-4 w-4" />
+          <ChevronDown className="h-4 w-4" />
         </Button>
       )}
     </div>

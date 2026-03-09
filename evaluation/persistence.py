@@ -175,6 +175,55 @@ def fail_run(run_id: str, total_seconds: float, error_message: str) -> None:
         db.close()
 
 
+def get_resumable_run(run_id: str) -> dict | None:
+    """Return run metadata if run exists and status is in_progress or failed; else None."""
+    db = _get_db()
+    row = db.execute(
+        "SELECT run_id, timestamp, model, provider, metadata FROM runs WHERE run_id = ? AND status IN ('in_progress', 'failed')",
+        (run_id,),
+    ).fetchone()
+    db.close()
+    return dict(row) if row else None
+
+
+def get_run_results(run_id: str) -> list[dict]:
+    """Fetch all case_results for a run, converted to result dict format for complete_run."""
+    db = _get_db()
+    rows = db.execute(
+        """SELECT case_id, category, passed, elapsed_seconds, answer_preview,
+                  tool_sequence, evaluations, error, trace
+           FROM case_results WHERE run_id = ? ORDER BY id""",
+        (run_id,),
+    ).fetchall()
+    db.close()
+    out = []
+    for r in rows:
+        tool_calls = []
+        evaluations = {}
+        try:
+            if r["tool_sequence"]:
+                tool_calls = json.loads(r["tool_sequence"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+        try:
+            if r["evaluations"]:
+                evaluations = json.loads(r["evaluations"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+        out.append({
+            "id": r["case_id"],
+            "category": r["category"] or "",
+            "pass": bool(r["passed"]),
+            "elapsed_seconds": r["elapsed_seconds"],
+            "answer_preview": r["answer_preview"] or "",
+            "tool_calls": tool_calls,
+            "evaluations": evaluations,
+            "error": r["error"],
+            "trace": r["trace"],
+        })
+    return out
+
+
 def get_case_history(case_id: str, limit: int = 20) -> list[dict]:
     """Show pass/fail history for a specific case across runs."""
     db = _get_db()

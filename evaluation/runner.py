@@ -30,7 +30,11 @@ async def run_evaluation(
     verbose: bool = False,
     trace_failures: bool = True,
     persist: bool = True,
+    resume_run_id: str | None = None,
 ) -> list[dict]:
+    if resume_run_id and not persist:
+        raise ValueError("--resume requires persistence; do not use --no-persist")
+
     cases_path = cases_path or CASES_DIR
     if isinstance(cases_path, str):
         cases_path = Path(cases_path)
@@ -47,7 +51,30 @@ async def run_evaluation(
     if not cases:
         return []
 
-    run_id = str(uuid.uuid4())[:8]
+    if resume_run_id:
+        from evaluation.persistence import get_resumable_run, get_run_results
+        run_meta = get_resumable_run(resume_run_id)
+        if not run_meta:
+            raise ValueError(
+                f"Run {resume_run_id} not found or not resumable (status must be in_progress or failed). "
+                "Check with: sqlite3 evaluation/eval_results.db < evaluation/queries/in_progress_pass_rate.sql"
+            )
+        existing_results = get_run_results(resume_run_id)
+        run_id = resume_run_id
+        results = list(existing_results)
+        completed_ids = {r["id"] for r in existing_results}
+        cases = [c for c in cases if c.get("id", "?") not in completed_ids]
+        if not cases:
+            total_seconds = sum(r.get("elapsed_seconds") or 0 for r in results)
+            from evaluation.persistence import complete_run
+            complete_run(run_id, total_seconds, results)
+            print(f"Resume complete: all {len(results)} cases already done.", flush=True)
+            return results
+        print(f"Resuming run {run_id}: {len(existing_results)} done, {len(cases)} remaining.", flush=True)
+    else:
+        run_id = str(uuid.uuid4())[:8]
+        results = []
+
     start_time = time.monotonic()
 
     from evaluation.mocks import MockMCPPool
@@ -67,11 +94,9 @@ async def run_evaluation(
         base_url = os.environ.get("LLM_PROXY_URL", "http://localhost:8000").rstrip("/")
         client = AsyncOpenAI(base_url=f"{base_url}/v1", api_key=os.environ.get("LLM_PROXY_API_KEY", "dummy"))
 
-    if persist:
+    if persist and not resume_run_id:
         from evaluation.persistence import start_run
         start_run(run_id=run_id, model=model, provider=provider, system_prompt=get_system_prompt(""))
-
-    results = []
     total = len(cases)
     try:
         for i, case in enumerate(cases):
@@ -192,7 +217,7 @@ async def run_evaluation(
                 save_case_result(run_id, r)
             print(format_single_result(r, verbose), flush=True)
 
-        total_seconds = time.monotonic() - start_time
+        total_seconds = sum(r.get("elapsed_seconds") or 0 for r in results)
         if persist:
             from evaluation.persistence import complete_run
             complete_run(run_id, total_seconds, results)
@@ -217,6 +242,7 @@ if __name__ == "__main__":
     parser.add_argument("--provider", "-p", type=str, default="openai")
     parser.add_argument("--llm-judge", action="store_true", help="Enable LLM-as-judge scoring")
     parser.add_argument("--no-persist", action="store_true", help="Skip persisting results to SQLite")
+    parser.add_argument("--resume", type=str, default=None, help="Resume interrupted run by run_id")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -230,6 +256,7 @@ if __name__ == "__main__":
         provider=args.provider,
         verbose=args.verbose,
         persist=not args.no_persist,
+        resume_run_id=args.resume,
     ))
     print(format_summary(results), flush=True)
     sys.exit(0 if all(r.get("pass") for r in results) else 1)

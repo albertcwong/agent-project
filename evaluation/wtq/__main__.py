@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--split", choices=["test", "train"], default="test")
     parser.add_argument("--limit", "-n", type=int, default=None)
     parser.add_argument("--no-persist", action="store_true", help="Skip persisting results to SQLite")
+    parser.add_argument("--resume", type=str, default=None, help="Resume interrupted WTQ run by run_id")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--verify-only", action="store_true", help="Validate adapter on first table and exit")
     args = parser.parse_args()
@@ -55,6 +56,7 @@ def main():
             limit=args.limit,
             verbose=args.verbose,
             persist=not args.no_persist,
+            resume_run_id=args.resume,
         )
     )
 
