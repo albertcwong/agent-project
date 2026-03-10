@@ -163,11 +163,28 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
     return () => observer.disconnect();
   }, [messages.length, streamingContent != null, streamingThought != null]);
 
+  const resetDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isAtBottomRef = useRef(isAtBottom);
+  isAtBottomRef.current = isAtBottom;
   useEffect(() => {
     if (isAtBottom && mode === "active") {
-      userTookControlRef.current = false;
-      setMode("passive");
+      if (resetDebounceRef.current) clearTimeout(resetDebounceRef.current);
+      resetDebounceRef.current = setTimeout(() => {
+        resetDebounceRef.current = null;
+        if (!isAtBottomRef.current) return;
+        userTookControlRef.current = false;
+        setMode("passive");
+      }, 300);
+    } else if (resetDebounceRef.current) {
+      clearTimeout(resetDebounceRef.current);
+      resetDebounceRef.current = null;
     }
+    return () => {
+      if (resetDebounceRef.current) {
+        clearTimeout(resetDebounceRef.current);
+        resetDebounceRef.current = null;
+      }
+    };
   }, [isAtBottom, mode]);
 
   const wasStreamingRef = useRef(false);
@@ -224,6 +241,7 @@ export function ChatMessages({ messages, streamingContent, streamingThought, ste
   useEffect(() => {
     if (userTookControlRef.current || mode !== "passive" || !isAtBottom || !bottomRef.current) return;
     const el = bottomRef.current;
+    if (!el) return;
     const now = Date.now();
     if ((streamingContent != null || streamingThought != null) && now - scrollThrottleRef.current < 60) return;
     scrollThrottleRef.current = now;
