@@ -6,7 +6,7 @@ INTENTS = ("query", "download", "inspect", "publish", "project", "general")
 _QUERY_KW = ("sales", "revenue", "forecast", "trend", "chart", "graph", "visualize", "data", "query", "how many", "top ", "show me", "list ", "break down", "compare", "aggregate", "count", "sum", "average")
 _DOWNLOAD_KW = ("download", "export", "save", "get file", "twbx", "tdsx", "tflx")
 _INSPECT_KW = ("inspect", "structure", "schema", "metadata", "connections", "calculated field", "parse")
-_PUBLISH_KW = ("publish", "upload", "deploy", "push to")
+_PUBLISH_KW = ("publish", "upload", "deploy", "push to", "update-datasource-data", "flag log")
 _PROJECT_KW = ("project", "folder", "list projects", "projects named")
 
 def classify(question: str) -> str:

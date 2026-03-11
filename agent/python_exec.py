@@ -36,6 +36,10 @@ try:
     import sklearn
 except ImportError:
     sklearn = None
+try:
+    import tableauhyperapi
+except ImportError:
+    tableauhyperapi = None
 
 def _run():
     raw = sys.stdin.read()
@@ -51,6 +55,7 @@ def _run():
         "scipy": scipy,
         "statsmodels": statsmodels,
         "sklearn": sklearn,
+        "tableauhyperapi": tableauhyperapi,
     }
     out_buf = []
     def _print(*a, sep=" ", end="\n", **k):

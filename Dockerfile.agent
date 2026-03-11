@@ -1,4 +1,5 @@
-FROM python:3.12-slim
+# linux/amd64 required: tableauhyperapi has no wheel for linux/arm64
+FROM --platform=linux/amd64 python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app

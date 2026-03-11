@@ -1,5 +1,6 @@
 """ReAct-style agent loop: LLM + MCP tools."""
 
+import base64
 import json
 import logging
 import os
@@ -31,7 +32,7 @@ async def _pool_context(server_configs: list[dict], override: dict | None):
 
 logger = logging.getLogger(__name__)
 
-MAX_AGENT_ITERATIONS = int(os.environ.get("MAX_AGENT_ITERATIONS", "10"))
+MAX_AGENT_ITERATIONS = int(os.environ.get("MAX_AGENT_ITERATIONS", "15"))
 MAX_RESULT_CHARS = int(os.environ.get("MAX_RESULT_CHARS", "50000"))
 TRUNCATE_MARKER = '\n\n... [truncated for display — full data is available via execute_python using data["rows"]]'
 
@@ -357,12 +358,22 @@ async def _resolve_project_path(pool: dict, sid: str, project_id: str, seen: set
     return None
 
 
-def _format_context_block(state: dict | None) -> str:
+def _user_specifies_datasource(question: str) -> bool:
+    """True if the user message indicates they are specifying a datasource by name."""
+    q = (question or "").lower()
+    signals = [
+        "datasource", "data source", "use datasource", "from datasource",
+        "query datasource", "use data source", "from data source",
+    ]
+    return any(s in q for s in signals)
+
+
+def _format_context_block(state: dict | None, user_question: str = "") -> str:
     """Format conversation state as a specific context block for the prompt."""
     if not state:
         return ""
     parts = []
-    if state.get("currentDatasourceId"):
+    if state.get("currentDatasourceId") and not _user_specifies_datasource(user_question):
         parts.append(f"Active datasource: {state['currentDatasourceId']}")
     if state.get("lastQuery"):
         q = state["lastQuery"]
@@ -422,12 +433,35 @@ def _update_conversation_state(
         if obj_id:
             out["lastInspectedObjectId"] = str(obj_id)
             out["lastInspectedObjectType"] = tool_name.split("-")[0]
+    elif tool_name == "list-datasources":
+        out.pop("currentDatasourceId", None)
+        out.pop("lastQuery", None)
+        out.pop("establishedFilters", None)
     elif tool_name in ("publish-workbook", "publish-datasource", "publish-flow") and not (result or "").strip().startswith("Error:"):
         proj_id = args.get("projectId")
         if proj_id:
             out["targetProjectId"] = str(proj_id)
             out["targetProjectName"] = args.get("projectName") or args.get("projectPath")
     return out if out else None
+
+
+# Text file extensions: decode and inject content into user message
+_TEXT_EXT = (".csv", ".txt", ".json", ".md", ".log")
+_MAX_TEXT_ATTACHMENT_CHARS = 50_000
+
+
+def _decode_text_attachment(att: dict) -> str | None:
+    """Decode base64 text attachment. Returns None on failure."""
+    try:
+        b64 = att.get("contentBase64")
+        if not isinstance(b64, str):
+            return None
+        raw = base64.b64decode(b64).decode("utf-8", errors="replace")
+        if len(raw) > _MAX_TEXT_ATTACHMENT_CHARS:
+            return raw[:_MAX_TEXT_ATTACHMENT_CHARS] + "\n\n... [truncated — file too large]"
+        return raw
+    except Exception:
+        return None
 
 
 def _inject_attachments_in_args(args: dict, attachments: list[dict]) -> dict:
@@ -458,18 +492,25 @@ async def run_agent_loop_stream(
     attachments: list[dict] | None = None,
     conversation_state: dict | None = None,
     trace_id: str | None = None,
+    _pool_override: dict | None = None,
+    _trace: bool = False,
 ):
     """Async generator yielding (chunk_type, data). chunk_type: "thought" | "text" | "done". data: str for thought/text, dict for done."""
+    trace = LoopTrace() if _trace else None
     if not server_configs:
+        if trace:
+            trace.termination_reason = "no_config"
         yield "text", "Please connect at least one Tableau MCP server in Settings & Help before asking Tableau questions."
-        yield "done", {"sources": [], "tool_calls": []}
+        yield "done", {"sources": [], "tool_calls": [], **({"trace": trace.to_dict()} if trace else {})}
         return
 
-    async with mcp_session_pool(server_configs) as pool:
+    async with _pool_context(server_configs, _pool_override) as pool:
         tools, tool_ui_map, tool_server_map = await get_tools_for_servers(server_configs, pool=pool)
         if not tools:
+            if trace:
+                trace.termination_reason = "no_tools"
             yield "text", "No Tableau tools available. Your session may have expired — sign in again in Settings & Help."
-            yield "done", {"sources": [], "tool_calls": []}
+            yield "done", {"sources": [], "tool_calls": [], **({"trace": trace.to_dict()} if trace else {})}
             return
 
         base_url = os.environ.get("LLM_PROXY_URL", "http://localhost:8000").rstrip("/")
@@ -487,11 +528,17 @@ async def run_agent_loop_stream(
         for m in (history or []):
             if m.get("role") in ("user", "assistant") and m.get("content"):
                 messages.append({"role": m["role"], "content": m["content"]})
-        ctx_block = _format_context_block(conversation_state)
+        ctx_block = _format_context_block(conversation_state, question)
         user_content = ctx_block + (f"[Tableau is connected.] {question}" if server_configs and tools else question)
         if attachments:
             names = ", ".join(a.get("filename", "file") for a in attachments)
-            user_content += f"\n\n[Attached file(s) for publishing: {names}. When calling publish-workbook, publish-datasource, or publish-flow, use contentBase64: 'ATTACHMENT_0' for the first file, 'ATTACHMENT_1' for the second, etc.]"
+            user_content += f"\n\n[Attached file(s): {names}. When calling publish-workbook, publish-datasource, publish-flow, or update-datasource-data, use contentBase64: 'ATTACHMENT_0' for the first file, 'ATTACHMENT_1' for the second, etc.]"
+            for a in attachments:
+                fn = (a.get("filename") or "").lower()
+                if any(fn.endswith(ext) for ext in _TEXT_EXT):
+                    decoded = _decode_text_attachment(a)
+                    if decoded:
+                        user_content += f"\n\n[File: {a.get('filename', 'file')}]\n{decoded}"
         messages.append({"role": "user", "content": user_content})
 
         tool_calls_log: list[dict] = []
@@ -500,6 +547,9 @@ async def run_agent_loop_stream(
         query_data_cache: dict[str, dict] = {}  # Full (untruncated) results keyed by datasource/view id
         seen_calls: set[str] = set()
         workflow = classify_intent(question)
+        if trace:
+            trace.intent = workflow
+            trace.system_prompt_length = len(system_prompt)
         logger.info("traceId=%s workflow=%s question_len=%d", trace_id or "(none)", workflow, len(question))
 
         if confirmed_action and write_confirmation:
@@ -563,16 +613,22 @@ async def run_agent_loop_stream(
                             yield "text", "Publish returned no confirmation. Check Tableau Server to verify."
                         else:
                             yield "text", clean
-                yield "done", {"sources": sources, "tool_calls": tool_calls_log, **({"conversationState": conv_state} if conv_state else {})}
+                if trace:
+                    trace.termination_reason = "confirmed_write"
+                yield "done", {"sources": sources, "tool_calls": tool_calls_log, **({"conversationState": conv_state} if conv_state else {}), **({"trace": trace.to_dict()} if trace else {})}
                 return
 
+        first_turn_no_history = not (history or []) and not (confirmed_action and write_confirmation)
         for iteration in range(MAX_AGENT_ITERATIONS):
+            if trace:
+                trace.add_iteration(iteration + 1)
             yield "thought", f"Step {iteration + 1}:"
+            tool_choice_val = "required" if (iteration == 0 and first_turn_no_history) else "auto"
             stream = await client.chat.completions.create(
                 model=model,
                 messages=messages,
                 tools=tools,
-                tool_choice="auto",
+                tool_choice=tool_choice_val,
                 stream=True,
             )
             content_parts = []
@@ -601,25 +657,37 @@ async def run_agent_loop_stream(
             content = "".join(content_parts).strip()
             # Only yield text when not running tool calls this turn—avoids duplicate intro (model emits it before + after tools)
             will_run_tools = bool(tool_calls_buf)
-            if finish_reason in ("stop", "length"):
+            # When we have tool_calls, execute them even if finish_reason is stop (some providers return stop with tool_calls)
+            if finish_reason in ("stop", "length") and will_run_tools:
+                logger.info(
+                    "traceId=%s provider returned finish_reason=%s with tool_calls (provider=%s)",
+                    trace_id or "(none)", finish_reason, provider,
+                )
+            if finish_reason in ("stop", "length") and not will_run_tools:
+                if trace:
+                    trace.set_llm_response(content, finish_reason, [])
+                    trace.termination_reason = "stop" if finish_reason == "stop" else "length"
                 if not content:
                     logger.warning("LLM returned stop/length with empty content (provider=%s model=%s)", provider, model)
                     yield "text", "The model returned no response. Try switching to OpenAI—some providers do not support tool calling."
-                elif not will_run_tools:
+                else:
                     if finish_reason == "length":
                         content = f"{content}\n\n(Response was truncated due to length. The answer may be incomplete.)"
                     yield "text", content
                 logger.info("traceId=%s completed iterations=%d tools=%s", trace_id or "(none)", iteration + 1, [t.get("name") for t in tool_calls_log])
-                yield "done", {"sources": sources, "tool_calls": tool_calls_log, **({"conversationState": conv_state} if conv_state else {})}
+                yield "done", {"sources": sources, "tool_calls": tool_calls_log, **({"conversationState": conv_state} if conv_state else {}), **({"trace": trace.to_dict()} if trace else {})}
                 return
 
             if not tool_calls_buf:
+                if trace:
+                    trace.set_llm_response(content, finish_reason, [])
+                    trace.termination_reason = "no_tool_calls"
                 if not content:
                     logger.warning("LLM returned no tool_calls and empty content (provider=%s model=%s)", provider, model)
                     yield "text", "The model returned no response. Try switching to OpenAI—some providers do not support tool calling."
                 else:
                     yield "text", content
-                yield "done", {"sources": sources, "tool_calls": tool_calls_log, **({"conversationState": conv_state} if conv_state else {})}
+                yield "done", {"sources": sources, "tool_calls": tool_calls_log, **({"conversationState": conv_state} if conv_state else {}), **({"trace": trace.to_dict()} if trace else {})}
                 return
 
             tc_by_idx: dict[int, dict] = {}
@@ -648,6 +716,8 @@ async def run_agent_loop_stream(
                 for tc in [tc_by_idx[i] for i in sorted(tc_by_idx)]
             ]
             content_str = "".join(content_parts) or ""
+            if trace:
+                trace.set_llm_response(content_str, finish_reason, [tc["function"]["name"] for tc in msg_tool_calls])
 
             messages.append({"role": "assistant", "content": content_str, "tool_calls": msg_tool_calls})
 
@@ -666,6 +736,8 @@ async def run_agent_loop_stream(
                 if call_key in seen_calls and name not in _REDUNDANCY_EXEMPT:
                     result = "You already called this tool with these exact arguments. Use the data you already have or adjust your approach."
                     tool_results.append((name, result))
+                    if trace:
+                        trace.add_tool_call(name, args, result, was_redundant=True)
                     logger.info(
                         "traceId=%s iter=%d tool=%s args_keys=%s redundant=True",
                         trace_id or "(none)", iteration + 1, name, list(args.keys()),
@@ -685,11 +757,13 @@ async def run_agent_loop_stream(
                                 confirm_args["projectName"] = path.split(" / ")[-1] if " / " in path else path
                         elif not confirm_args.get("projectName") and (name_res := await _resolve_project_name(pool, sid, str(project_id))):
                             confirm_args["projectName"] = name_res
+                    if trace:
+                        trace.termination_reason = "confirmation"
                     yield "confirm", {
                         "action": {"toolName": name, "arguments": confirm_args},
                         "correlationId": str(uuid.uuid4()),
                     }
-                    yield "done", {"sources": sources, "tool_calls": tool_calls_log, "awaitingConfirmation": True, **({"conversationState": conv_state} if conv_state else {})}
+                    yield "done", {"sources": sources, "tool_calls": tool_calls_log, "awaitingConfirmation": True, **({"conversationState": conv_state} if conv_state else {}), **({"trace": trace.to_dict()} if trace else {})}
                     return
 
                 args = _inject_attachments_in_args(args, attachments or [])
@@ -698,11 +772,21 @@ async def run_agent_loop_stream(
                     if isinstance(py_data, dict):
                         has_real_data = any(isinstance(v, list) and len(v) > 0 for v in py_data.values())
                         if not has_real_data and query_data_cache:
-                            last_data = query_data_cache.get("last") or next(iter(query_data_cache.values()), None)
-                            if last_data:
-                                rows = last_data.get("rows") or last_data.get("data") or last_data.get("results") or []
+                            combined = {}
+                            for ds_id, cached in query_data_cache.items():
+                                if ds_id == "last":
+                                    continue
+                                rows = cached.get("rows") or cached.get("data") or cached.get("results") or []
                                 if isinstance(rows, list) and rows:
-                                    py_data = {"rows": rows}
+                                    combined[ds_id] = rows
+                            if combined:
+                                py_data = combined
+                            else:
+                                last_data = query_data_cache.get("last") or next(iter(query_data_cache.values()), None)
+                                if last_data:
+                                    rows = last_data.get("rows") or last_data.get("data") or last_data.get("results") or []
+                                    if isinstance(rows, list) and rows:
+                                        py_data = {"rows": rows}
                     result = run_execute_python(args.get("code", ""), py_data)
                 else:
                     cfg = tool_server_map.get(name) or server_configs[0]
@@ -713,6 +797,8 @@ async def run_agent_loop_stream(
                         logger.exception("Tool %s failed", name)
                         result = "Error: MCP server connection failed. Please try again."
                 tool_results.append((name, result))
+                if trace:
+                    trace.add_tool_call(name, args, str(result), was_redundant=False)
                 logger.info(
                     "traceId=%s iter=%d tool=%s args_keys=%s result_len=%d redundant=False",
                     trace_id or "(none)", iteration + 1, name, list(args.keys()), len(str(result)),
@@ -761,6 +847,8 @@ async def run_agent_loop_stream(
                     }
 
         summary = f"Tools used: {', '.join(t.get('name', '') for t in tool_calls_log)}." if tool_calls_log else ""
+        if trace:
+            trace.termination_reason = "max_iterations"
         logger.info("traceId=%s max_iterations_reached tools=%s", trace_id or "(none)", [t.get("name") for t in tool_calls_log])
         try:
             summary_prompt = """You have reached the maximum number of steps. Summarize in 3-4 sentences:
@@ -782,7 +870,7 @@ Do not attempt any more tool calls. Be concise."""
                 yield "text", f"I've reached the limit of steps. {summary} You can ask a follow-up to continue."
         except Exception:
             yield "text", f"I've reached the limit of steps. {summary} You can ask a follow-up to continue."
-        yield "done", {"sources": sources, "tool_calls": tool_calls_log, **({"conversationState": conv_state} if conv_state else {})}
+        yield "done", {"sources": sources, "tool_calls": tool_calls_log, **({"conversationState": conv_state} if conv_state else {}), **({"trace": trace.to_dict()} if trace else {})}
 
 
 async def run_agent_loop(
@@ -799,226 +887,42 @@ async def run_agent_loop(
     _pool_override: dict | None = None,
     _trace: bool = False,
 ) -> tuple[str, list[dict], list[dict], bool, dict | None, "LoopTrace | None"]:
-    """
-    Run the agent loop. Returns (answer, sources, tool_calls, awaitingConfirmation, conversationState, trace).
-    If server_configs is empty, returns a prompt to connect a server.
-    """
-    trace = LoopTrace() if _trace else None
-    if _trace:
-        trace.intent = classify_intent(question)
-        trace.system_prompt_length = len(system_prompt)
+    """Convenience wrapper: runs the streaming loop and collects the result."""
+    text_parts = []
+    sources = []
+    tool_calls = []
+    awaiting = False
+    conv_state = conversation_state
+    trace = None
 
-    if not server_configs:
-        if trace:
-            trace.termination_reason = "no_config"
-        return (
-            "Please connect at least one Tableau MCP server in Settings & Help before asking Tableau questions.",
-            [],
-            [],
-            False,
-            conversation_state,
-            trace,
-        )
+    async for chunk_type, data in run_agent_loop_stream(
+        question=question,
+        system_prompt=system_prompt,
+        server_configs=server_configs,
+        provider=provider,
+        model=model,
+        history=history,
+        write_confirmation=write_confirmation,
+        confirmed_action=confirmed_action,
+        attachments=attachments,
+        conversation_state=conversation_state,
+        trace_id=None,
+        _pool_override=_pool_override,
+        _trace=_trace,
+    ):
+        if chunk_type == "text":
+            text_parts.append(data)
+        elif chunk_type == "done":
+            sources = data.get("sources", [])
+            tool_calls = data.get("tool_calls", [])
+            awaiting = data.get("awaitingConfirmation", False)
+            conv_state = data.get("conversationState", conversation_state)
+            t = data.get("trace")
+            if t and isinstance(t, dict):
+                trace = LoopTrace.from_dict(t)
 
-    async with _pool_context(server_configs, _pool_override) as pool:
-        tools, _, tool_server_map = await get_tools_for_servers(server_configs, pool=pool)
-        if not tools:
-            if trace:
-                trace.termination_reason = "no_tools"
-            return (
-                "No Tableau tools available. Your session may have expired — sign in again in Settings & Help.",
-                [],
-                [],
-                False,
-                conversation_state,
-                trace,
-            )
-
-        base_url = os.environ.get("LLM_PROXY_URL", "http://localhost:8000").rstrip("/")
-        api_key = os.environ.get("LLM_PROXY_API_KEY", "dummy")
-        headers = await _get_endor_headers(base_url, api_key, provider)
-        client = AsyncOpenAI(
-            base_url=f"{base_url}/v1",
-            api_key=api_key,
-            default_headers=headers,
-            timeout=httpx.Timeout(60.0, read=STREAM_READ_TIMEOUT),
-        )
-        model = model or DEFAULT_MODEL
-
-        messages: list[dict] = [{"role": "system", "content": system_prompt}]
-        for m in (history or []):
-            if m.get("role") in ("user", "assistant") and m.get("content"):
-                messages.append({"role": m["role"], "content": m["content"]})
-        ctx_block = _format_context_block(conversation_state)
-        user_content = ctx_block + (f"[Tableau is connected.] {question}" if server_configs and tools else question)
-        if attachments:
-            names = ", ".join(a.get("filename", "file") for a in attachments)
-            user_content += f"\n\n[Attached file(s) for publishing: {names}. When calling publish-workbook, publish-datasource, or publish-flow, use contentBase64: 'ATTACHMENT_0' for the first file, 'ATTACHMENT_1' for the second, etc.]"
-        messages.append({"role": "user", "content": user_content})
-
-        tool_calls_log: list[dict] = []
-        sources: list[dict] = []
-        conv_state = dict(conversation_state) if conversation_state else {}
-        query_data_cache: dict[str, dict] = {}
-        seen_calls: set[str] = set()
-
-        if confirmed_action and write_confirmation:
-            name = confirmed_action.get("toolName") or ""
-            args = dict(confirmed_action.get("arguments") or {})
-            if name in WRITE_TOOLS:
-                args = _inject_attachments_in_args(args, attachments or [])
-                cfg = tool_server_map.get(name) or server_configs[0]
-                sid = cfg.get("id", cfg.get("url", ""))
-                tool_calls_log.append({"name": name, "arguments": args})
-                try:
-                    result = await pool["call_tool"](sid, name, args)
-                except Exception:
-                    logger.exception("Tool %s failed", name)
-                    result = "Error: MCP server connection failed. Please try again."
-                tc_id = f"call_{uuid.uuid4().hex[:12]}"
-                messages.append({"role": "assistant", "content": "", "tool_calls": [{"id": tc_id, "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]})
-                clean = _sanitize_tool_result(result)
-                tool_content = _truncate_for_llm(clean)
-                if err_type := _classify_error(clean):
-                    tool_content += _error_hint(err_type)
-                messages.append({"role": "tool", "tool_call_id": tc_id, "content": tool_content})
-
-        for i in range(MAX_AGENT_ITERATIONS):
-            if trace:
-                trace.add_iteration(i + 1)
-            resp = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-            )
-            choice = resp.choices[0] if resp.choices else None
-            if not choice:
-                if trace:
-                    trace.termination_reason = "no_response"
-                return ("No response from model.", sources, tool_calls_log, False, conversation_state, trace)
-
-            msg = choice.message
-            finish_reason = getattr(choice, "finish_reason", None) or "stop"
-            tool_names = [t.function.name for t in (msg.tool_calls or [])]
-            if trace:
-                trace.set_llm_response(msg.content or "", finish_reason, tool_names)
-
-            if finish_reason in ("stop", "length"):
-                if trace:
-                    trace.termination_reason = "stop" if finish_reason == "stop" else "length"
-                content = (msg.content or "").strip()
-                if finish_reason == "length" and content:
-                    content = f"{content}\n\n(Response was truncated due to length. The answer may be incomplete.)"
-                return (content or "No answer generated.", sources, tool_calls_log, False, conv_state if conv_state else conversation_state, trace)
-
-            if not msg.tool_calls:
-                if trace:
-                    trace.termination_reason = "no_tool_calls"
-                content = (msg.content or "").strip()
-                return (content or "No answer generated.", sources, tool_calls_log, False, conv_state if conv_state else conversation_state, trace)
-
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": msg.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {"name": tc.function.name, "arguments": tc.function.arguments or "{}"},
-                            **({"thought_signature": ts} if (ts := getattr(tc, "thought_signature", None)) is not None else {}),
-                        }
-                        for tc in msg.tool_calls
-                    ],
-                }
-            )
-
-            tool_results = []
-            for tc in msg.tool_calls:
-                name = tc.function.name
-                try:
-                    args = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                call_key = f"{name}:{json.dumps(args, sort_keys=True)}"
-                is_redundant = call_key in seen_calls and name not in _REDUNDANCY_EXEMPT
-                if is_redundant:
-                    result = "You already called this tool with these exact arguments. Use the data you already have or adjust your approach."
-                    tool_results.append((name, result))
-                    if trace:
-                        trace.add_tool_call(name, args, result, was_redundant=True)
-                else:
-                    tool_calls_log.append({"name": name, "arguments": args})
-                    seen_calls.add(call_key)
-                    if name in WRITE_TOOLS and not write_confirmation:
-                        if trace:
-                            trace.termination_reason = "confirmation"
-                        return (
-                            "Please confirm the publish action to proceed.",
-                            sources,
-                            tool_calls_log,
-                            True,
-                            conv_state if conv_state else conversation_state,
-                            trace,
-                        )
-
-                    args = _inject_attachments_in_args(args, attachments or [])
-                    if name == "execute_python":
-                        py_data = args.get("data") or {}
-                        if isinstance(py_data, dict):
-                            has_real_data = any(isinstance(v, list) and len(v) > 0 for v in py_data.values())
-                            if not has_real_data and query_data_cache:
-                                last_data = query_data_cache.get("last") or next(iter(query_data_cache.values()), None)
-                                if last_data:
-                                    rows = last_data.get("rows") or last_data.get("data") or last_data.get("results") or []
-                                    if isinstance(rows, list) and rows:
-                                        py_data = {"rows": rows}
-                        result = run_execute_python(args.get("code", ""), py_data)
-                    else:
-                        cfg = tool_server_map.get(name) or server_configs[0]
-                        sid = cfg.get("id", cfg.get("url", ""))
-                        try:
-                            result = await pool["call_tool"](sid, name, args)
-                        except Exception:
-                            logger.exception("Tool %s failed", name)
-                            result = "Error: MCP server connection failed. Please try again."
-                    tool_results.append((name, result))
-                    if trace:
-                        trace.add_tool_call(name, args, str(result), was_redundant=False)
-                    if name in ("query-datasource", "get-view-data") and not (str(result) or "").strip().startswith("Error:"):
-                        parsed = _parse_query_result(result)
-                        if isinstance(parsed, dict):
-                            ds_id = str(args.get("datasourceLuid") or args.get("datasourceId") or args.get("viewId") or "last")
-                            query_data_cache[ds_id] = parsed
-                            query_data_cache["last"] = parsed
-
-            for tc, (name, result) in zip(msg.tool_calls, tool_results):
-                content = _format_python_result(result) if name == "execute_python" else _sanitize_tool_result(result)
-                try:
-                    tc_args = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    tc_args = {}
-                updated = _update_conversation_state(conv_state, name, tc_args, content)
-                if updated is not None:
-                    conv_state = updated
-                if name in ("query-datasource", "get-view-data"):
-                    ds_id = tc_args.get("datasourceLuid") or tc_args.get("datasourceId") or tc_args.get("viewId")
-                    if ds_id and not any(s.get("id") == str(ds_id) for s in sources):
-                        sources.append({"id": str(ds_id), "type": name, "tool": name})
-                tool_content = _truncate_for_llm(content)
-                if err_type := _classify_error(content):
-                    tool_content += _error_hint(err_type)
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": tool_content})
-
-    summary = f"Tools used: {', '.join(t.get('name', '') for t in tool_calls_log)}." if tool_calls_log else ""
-    if trace:
-        trace.termination_reason = "max_iterations"
-    return (
-        f"I've reached the limit of steps. {summary} You can ask a follow-up to continue.",
-        sources,
-        tool_calls_log,
-        False,
-        conv_state if conv_state else conversation_state,
-        trace,
-    )
+    if awaiting and not text_parts:
+        answer = "Please confirm the publish action to proceed."
+    else:
+        answer = "\n".join(text_parts) if text_parts else "No answer generated."
+    return (answer, sources, tool_calls, awaiting, conv_state, trace)
