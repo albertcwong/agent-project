@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager
 
@@ -13,6 +14,7 @@ from openai import AsyncOpenAI
 
 STREAM_READ_TIMEOUT = float(os.environ.get("LLM_STREAM_READ_TIMEOUT", "300"))
 
+from agent.flag_log_write import parse_flags_json
 from agent.intent import classify as classify_intent
 from agent.mcp_client import mcp_session_pool
 from agent.python_exec import execute_python as run_execute_python
@@ -32,7 +34,7 @@ async def _pool_context(server_configs: list[dict], override: dict | None):
 
 logger = logging.getLogger(__name__)
 
-MAX_AGENT_ITERATIONS = int(os.environ.get("MAX_AGENT_ITERATIONS", "15"))
+MAX_AGENT_ITERATIONS = int(os.environ.get("MAX_AGENT_ITERATIONS", "20"))
 MAX_RESULT_CHARS = int(os.environ.get("MAX_RESULT_CHARS", "50000"))
 TRUNCATE_MARKER = '\n\n... [truncated for display — full data is available via execute_python using data["rows"]]'
 
@@ -41,6 +43,74 @@ _CHART_TOOLS = {"query-datasource", "get-view-data"}
 
 # Tools exempt from redundancy check (agent may re-read after errors)
 _REDUNDANCY_EXEMPT = {"get-datasource-metadata", "list-datasources", "search-content", "list-projects", "list-workbooks"}
+
+# Patterns indicating the LLM is asking the user for text confirmation instead of calling a tool
+_CONFIRMATION_PATTERNS = (
+    "is this correct", "shall i proceed", "should i proceed", "do you confirm",
+    "would you like me to proceed", "do you want me to", "ready to publish",
+    "can i proceed", "want me to go ahead",
+)
+
+
+def _is_text_confirmation(content: str, workflow: str) -> bool:
+    """Detect if the LLM is asking for text confirmation in a publish workflow."""
+    if workflow not in ("publish",):
+        return False
+    lower = content.lower()
+    return any(p in lower for p in _CONFIRMATION_PATTERNS)
+
+
+def _parse_publish_intent(content: str) -> dict | None:
+    """Extract publish tool name and arguments from an LLM text confirmation message.
+
+    Returns {"toolName": ..., "arguments": {...}} or None if parsing fails.
+    The LLM typically says something like:
+      'I will publish "albert test" to the "My Project" project using ATTACHMENT_0.'
+    """
+    lower = content.lower()
+    # Determine which publish tool
+    if "update" in lower and "datasource" in lower:
+        tool_name = "update-datasource-data"
+    elif "datasource" in lower:
+        tool_name = "publish-datasource"
+    elif "workbook" in lower:
+        tool_name = "publish-workbook"
+    elif "flow" in lower:
+        tool_name = "publish-flow"
+    else:
+        tool_name = "publish-datasource"  # default for publish workflow
+
+    args: dict = {}
+    # Extract name: look for quoted strings near "name" or after "publish"
+    name_patterns = [
+        re.compile(r"""(?:name\s+(?:is|as|:)\s*['"]?)([^'".\n]{1,80})['"]?""", re.IGNORECASE),
+        re.compile(r"""(?:publish|datasource|workbook)\s+['"]([^'"]{1,80})['"]""", re.IGNORECASE),
+        re.compile(r"""['"]([^'"]{1,80})['"]\s+(?:to|as|datasource|workbook)""", re.IGNORECASE),
+    ]
+    for pat in name_patterns:
+        m = pat.search(content)
+        if m:
+            args["name"] = m.group(1).strip()
+            break
+    # Extract project name (we'll auto-resolve the ID later)
+    proj_patterns = [
+        re.compile(r"""(?:project|to the)\s+['"]([^'"]{1,80})['"]""", re.IGNORECASE),
+        re.compile(r"""['"]([^'"]{1,80})['"]\s+project""", re.IGNORECASE),
+    ]
+    for pat in proj_patterns:
+        m = pat.search(content)
+        if m:
+            args["projectId"] = m.group(1).strip()  # name, will be auto-resolved
+            break
+    # contentBase64 placeholder
+    if "attachment" in lower:
+        args["contentBase64"] = "ATTACHMENT_0"
+
+    if not args.get("name") and tool_name != "update-datasource-data":
+        return None
+    return {"toolName": tool_name, "arguments": args}
+
+
 
 # Keywords indicating user wants a chart/visualization (MCP app)
 _CHART_KEYWORDS = (
@@ -257,6 +327,19 @@ def _tool_input_preview(name: str, args: dict) -> str | None:
         vid = args.get("viewId") or args.get("view_id")
         if vid:
             return f"viewId: {vid}"
+    if name in ("publish-workbook", "publish-datasource", "publish-flow", "update-datasource-data"):
+        parts = []
+        if args.get("projectId"):
+            parts.append(f"projectId: {args['projectId']}")
+        if args.get("name"):
+            parts.append(f"name: {args['name']}")
+        if args.get("datasourceId"):
+            parts.append(f"datasourceId: {args['datasourceId']}")
+        if args.get("contentBase64"):
+            b64 = args["contentBase64"]
+            parts.append(f"contentBase64: ({len(b64)} chars)")
+        if parts:
+            return "\n".join(parts)
     return None
 
 
@@ -297,6 +380,26 @@ def _tool_result_summary(name: str, result: str, max_len: int = 800) -> str:
 
 
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "gpt-4")
+
+
+async def _retry_empty_after_tools(client, messages: list, model: str, tools: list) -> str | None:
+    """If last message is tool, retry once with nudge. Returns content or None."""
+    if not messages or messages[-1].get("role") != "tool":
+        return None
+    messages.append({"role": "user", "content": "Please respond to the user based on the tool results above."})
+    try:
+        # Omit tools on retry—some providers (e.g. Gemini) return empty when tools are present
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=False,
+        )
+        c = resp.choices[0] if resp.choices else None
+        if c and getattr(c.message, "content", None):
+            return (c.message.content or "").strip()
+    except Exception:
+        logger.exception("Retry after empty content failed")
+    return None
 
 
 def _get_project_from_result(result: str) -> dict | None:
@@ -464,6 +567,79 @@ def _decode_text_attachment(att: dict) -> str | None:
         return None
 
 
+# Tableau LUIDs are UUIDs (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+_LUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+
+
+def _is_valid_luid(val: str) -> bool:
+    """Check if a string looks like a valid Tableau LUID (UUID format)."""
+    return bool(_LUID_RE.match(val.strip()))
+
+
+async def _auto_resolve_project(
+    pool: dict, sid: str, search_name: str,
+    tool_calls_log: list[dict], log: logging.Logger,
+    trace_id: str | None = None, iteration: int = 0,
+) -> str | None:
+    """Call list-projects and return a resolved LUID, or None on failure.
+
+    Tries with a name filter first; falls back to listing all projects if
+    the filtered call returns nothing (some MCP servers don't support filters).
+    """
+    for attempt, lp_args in enumerate([
+        {"filter": f"name:eq:{search_name}"} if search_name else {},
+        {},  # fallback: list all
+    ]):
+        if attempt == 1 and not search_name:
+            break  # already tried unfiltered
+        try:
+            lp_result = await pool["call_tool"](sid, "list-projects", lp_args)
+            tool_calls_log.append({"name": "list-projects", "arguments": lp_args})
+        except Exception:
+            log.exception("traceId=%s iter=%d auto list-projects failed (attempt %d)", trace_id or "(none)", iteration, attempt)
+            continue
+        log.info(
+            "traceId=%s iter=%d list-projects attempt=%d result_preview=%.300s",
+            trace_id or "(none)", iteration, attempt, str(lp_result)[:300],
+        )
+        if not lp_result or str(lp_result).startswith("Error:"):
+            continue
+        try:
+            lp_data = json.loads(lp_result) if isinstance(lp_result, str) else lp_result
+            # Handle multiple response shapes: {"projects": [...]}, [...], or {"project": {...}}
+            projects = (
+                lp_data.get("projects")
+                or lp_data.get("project") and [lp_data["project"]]
+                or (lp_data if isinstance(lp_data, list) else [])
+            )
+            if not isinstance(projects, list):
+                projects = [projects] if projects else []
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            continue
+        resolved_id = None
+        # Prefer exact name match
+        if search_name:
+            for p in projects:
+                if (p.get("name") or "").lower() == search_name.lower():
+                    resolved_id = p.get("id") or p.get("luid")
+                    break
+        # Fall back to first result
+        if not resolved_id and projects:
+            resolved_id = projects[0].get("id") or projects[0].get("luid")
+        if resolved_id and _is_valid_luid(str(resolved_id)):
+            return str(resolved_id)
+    return None
+
+
+# Args added for the UI confirmation dialog but not part of MCP tool schemas
+_UI_ONLY_ARGS = {"projectPath", "projectName"}
+
+
+def _strip_ui_args(args: dict) -> dict:
+    """Remove UI-only keys (projectPath, projectName) before sending to MCP server."""
+    return {k: v for k, v in args.items() if k not in _UI_ONLY_ARGS}
+
+
 def _inject_attachments_in_args(args: dict, attachments: list[dict]) -> dict:
     """Replace ATTACHMENT_N placeholders in contentBase64 with actual content."""
     if not attachments:
@@ -555,8 +731,41 @@ async def run_agent_loop_stream(
         if confirmed_action and write_confirmation:
             name = confirmed_action.get("toolName") or ""
             args = dict(confirmed_action.get("arguments") or {})
+            logger.info("traceId=%s confirmed_action: tool=%s attachments=%d contentBase64_len=%d",
+                        trace_id or "(none)", name, len(attachments or []),
+                        len(str(args.get("contentBase64", ""))))
             if name in WRITE_TOOLS:
+                # Auto-resolve projectId for publish tools if missing or not a LUID
+                if name in ("publish-workbook", "publish-datasource", "publish-flow"):
+                    pid = args.get("projectId") or ""
+                    if not pid or not _is_valid_luid(str(pid)):
+                        search_name = str(pid) if pid and not _is_valid_luid(str(pid)) else ""
+                        if not search_name:
+                            for kw in ("to the ", "to '", 'to "', "project "):
+                                idx = question.lower().find(kw)
+                                if idx >= 0:
+                                    candidate = question[idx + len(kw):].strip().strip("'\"").split(" project")[0].split(" on ")[0].strip()
+                                    if candidate and len(candidate) < 80:
+                                        search_name = candidate
+                                        break
+                        yield "thought", f"  Auto-resolving project: {search_name or '(listing all)'}"
+                        cfg = tool_server_map.get("list-projects") or server_configs[0]
+                        sid = cfg.get("id", cfg.get("url", ""))
+                        resolved_id = await _auto_resolve_project(pool, sid, search_name, tool_calls_log, logger, trace_id)
+                        if resolved_id:
+                            yield "thought", f"  Resolved projectId: {resolved_id}"
+                            args["projectId"] = str(resolved_id)
+                        else:
+                            yield "text", f'Publish failed: could not resolve project "{search_name or pid}" to a valid ID.'
+                            if trace:
+                                trace.termination_reason = "invalid_project_id"
+                            yield "done", {"sources": [], "tool_calls": tool_calls_log, **({"trace": trace.to_dict()} if trace else {})}
+                            return
                 args = _inject_attachments_in_args(args, attachments or [])
+                # User confirmed via dialog — set overwrite=true for publish tools
+                if name in ("publish-workbook", "publish-datasource", "publish-flow"):
+                    args.setdefault("overwrite", True)
+                mcp_args = _strip_ui_args(args)
                 cfg = tool_server_map.get(name) or server_configs[0]
                 sid = cfg.get("id", cfg.get("url", ""))
                 tool_calls_log.append({"name": name, "arguments": args})
@@ -565,7 +774,7 @@ async def run_agent_loop_stream(
                     if (preview := _tool_input_preview(name, args)):
                         for line in preview.split("\n"):
                             yield "thought", f"    {line}"
-                    result = await pool["call_tool"](sid, name, args)
+                    result = await pool["call_tool"](sid, name, mcp_args)
                 except Exception:
                     logger.exception("Tool %s failed", name)
                     result = "Error: MCP server connection failed. Please try again."
@@ -657,69 +866,98 @@ async def run_agent_loop_stream(
             content = "".join(content_parts).strip()
             # Only yield text when not running tool calls this turn—avoids duplicate intro (model emits it before + after tools)
             will_run_tools = bool(tool_calls_buf)
+            synthetic_tool_calls = None  # set when we intercept a text confirmation
+
             # When we have tool_calls, execute them even if finish_reason is stop (some providers return stop with tool_calls)
             if finish_reason in ("stop", "length") and will_run_tools:
                 logger.info(
                     "traceId=%s provider returned finish_reason=%s with tool_calls (provider=%s)",
                     trace_id or "(none)", finish_reason, provider,
                 )
-            if finish_reason in ("stop", "length") and not will_run_tools:
-                if trace:
-                    trace.set_llm_response(content, finish_reason, [])
-                    trace.termination_reason = "stop" if finish_reason == "stop" else "length"
-                if not content:
-                    logger.warning("LLM returned stop/length with empty content (provider=%s model=%s)", provider, model)
-                    yield "text", "The model returned no response. Try switching to OpenAI—some providers do not support tool calling."
+
+            if not will_run_tools:
+                # Intercept: if the LLM is asking "Is this correct?" instead of calling the publish tool,
+                # parse the intent and inject a synthetic tool call instead of re-prompting the LLM
+                if content and _is_text_confirmation(content, workflow):
+                    parsed = _parse_publish_intent(content)
+                    if parsed:
+                        logger.info("traceId=%s intercepted text confirmation, injecting synthetic %s call", trace_id or "(none)", parsed["toolName"])
+                        yield "thought", f"  (intercepted text confirmation — calling {parsed['toolName']} directly)"
+                        synthetic_id = f"call_{uuid.uuid4().hex[:12]}"
+                        synthetic_tool_calls = [{
+                            "id": synthetic_id, "type": "function",
+                            "function": {"name": parsed["toolName"], "arguments": json.dumps(parsed["arguments"])},
+                        }]
+                        messages.append({"role": "assistant", "content": content, "tool_calls": synthetic_tool_calls})
+                        msg_tool_calls = synthetic_tool_calls
+                        # Fall through to tool execution below
+                    else:
+                        logger.info("traceId=%s intercepted text confirmation but could not parse intent, re-prompting", trace_id or "(none)")
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": "Yes, proceed. Call the publish tool now with the arguments you described. Do not ask for confirmation — the system will prompt me automatically."})
+                        continue
                 else:
-                    if finish_reason == "length":
-                        content = f"{content}\n\n(Response was truncated due to length. The answer may be incomplete.)"
-                    yield "text", content
-                logger.info("traceId=%s completed iterations=%d tools=%s", trace_id or "(none)", iteration + 1, [t.get("name") for t in tool_calls_log])
-                yield "done", {"sources": sources, "tool_calls": tool_calls_log, **({"conversationState": conv_state} if conv_state else {}), **({"trace": trace.to_dict()} if trace else {})}
-                return
+                    # Normal stop: no tool calls, not a text confirmation — return final answer
+                    if trace:
+                        trace.set_llm_response(content, finish_reason, [])
+                        trace.termination_reason = "stop" if finish_reason == "stop" else ("length" if finish_reason == "length" else "no_tool_calls")
+                    if not content:
+                        content = await _retry_empty_after_tools(client, messages, model, tools)
+                    if not content:
+                        logger.warning("LLM returned no content (provider=%s model=%s finish=%s)", provider, model, finish_reason)
+                        hint = "The model returned no response. Try switching to OpenAI—some providers do not support tool calling."
+                        last_err = next((m for m in reversed(messages) if m.get("role") == "tool" and (m.get("content") or "").strip().lower().startswith("error")), None)
+                        if last_err:
+                            hint += " If a tool call failed, check your Tableau connection."
+                        yield "text", hint
+                    else:
+                        if finish_reason == "length":
+                            content = f"{content}\n\n(Response was truncated due to length. The answer may be incomplete.)"
+                        yield "text", content
+                    logger.info("traceId=%s completed iterations=%d tools=%s", trace_id or "(none)", iteration + 1, [t.get("name") for t in tool_calls_log])
+                    yield "done", {"sources": sources, "tool_calls": tool_calls_log, **({"conversationState": conv_state} if conv_state else {}), **({"trace": trace.to_dict()} if trace else {})}
+                    return
 
-            if not tool_calls_buf:
+            if not synthetic_tool_calls:
+                # Normal path: assemble tool calls from streaming chunks
+                tc_by_idx: dict[int, dict] = {}
+                for t in tool_calls_buf:
+                    idx = getattr(t, "index", 0)
+                    if idx not in tc_by_idx:
+                        tc_by_idx[idx] = {"id": "", "name": "", "arguments": "", "thought_signature": None}
+                    if getattr(t, "id", None):
+                        tc_by_idx[idx]["id"] = (tc_by_idx[idx]["id"] or "") + (t.id or "")
+                    fn = getattr(t, "function", None) or {}
+                    if getattr(fn, "name", None):
+                        existing = tc_by_idx[idx]["name"] or ""
+                        new_part = fn.name or ""
+                        if new_part:
+                            if new_part == existing or existing.endswith(new_part):
+                                pass  # already have it (avoids list-datasourceslist-datasources)
+                            elif new_part.startswith(existing):
+                                tc_by_idx[idx]["name"] = new_part
+                            else:
+                                tc_by_idx[idx]["name"] = existing + new_part
+                    if getattr(fn, "arguments", None):
+                        tc_by_idx[idx]["arguments"] = (tc_by_idx[idx]["arguments"] or "") + (fn.arguments or "")
+                    if (ts := getattr(t, "thought_signature", None)) is not None:
+                        existing = tc_by_idx[idx].get("thought_signature") or ""
+                        tc_by_idx[idx]["thought_signature"] = existing + (ts if isinstance(ts, str) else str(ts))
+
+                msg_tool_calls = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": tc["arguments"] or "{}"},
+                        **({"thought_signature": tc["thought_signature"]} if tc.get("thought_signature") else {}),
+                    }
+                    for tc in [tc_by_idx[i] for i in sorted(tc_by_idx)]
+                ]
+                content_str = "".join(content_parts) or ""
                 if trace:
-                    trace.set_llm_response(content, finish_reason, [])
-                    trace.termination_reason = "no_tool_calls"
-                if not content:
-                    logger.warning("LLM returned no tool_calls and empty content (provider=%s model=%s)", provider, model)
-                    yield "text", "The model returned no response. Try switching to OpenAI—some providers do not support tool calling."
-                else:
-                    yield "text", content
-                yield "done", {"sources": sources, "tool_calls": tool_calls_log, **({"conversationState": conv_state} if conv_state else {}), **({"trace": trace.to_dict()} if trace else {})}
-                return
+                    trace.set_llm_response(content_str, finish_reason, [tc["function"]["name"] for tc in msg_tool_calls])
 
-            tc_by_idx: dict[int, dict] = {}
-            for t in tool_calls_buf:
-                idx = getattr(t, "index", 0)
-                if idx not in tc_by_idx:
-                    tc_by_idx[idx] = {"id": "", "name": "", "arguments": "", "thought_signature": None}
-                if getattr(t, "id", None):
-                    tc_by_idx[idx]["id"] = (tc_by_idx[idx]["id"] or "") + (t.id or "")
-                fn = getattr(t, "function", None) or {}
-                if getattr(fn, "name", None):
-                    tc_by_idx[idx]["name"] = (tc_by_idx[idx]["name"] or "") + (fn.name or "")
-                if getattr(fn, "arguments", None):
-                    tc_by_idx[idx]["arguments"] = (tc_by_idx[idx]["arguments"] or "") + (fn.arguments or "")
-                if (ts := getattr(t, "thought_signature", None)) is not None:
-                    existing = tc_by_idx[idx].get("thought_signature") or ""
-                    tc_by_idx[idx]["thought_signature"] = existing + (ts if isinstance(ts, str) else str(ts))
-
-            msg_tool_calls = [
-                {
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {"name": tc["name"], "arguments": tc["arguments"] or "{}"},
-                    **({"thought_signature": tc["thought_signature"]} if tc.get("thought_signature") else {}),
-                }
-                for tc in [tc_by_idx[i] for i in sorted(tc_by_idx)]
-            ]
-            content_str = "".join(content_parts) or ""
-            if trace:
-                trace.set_llm_response(content_str, finish_reason, [tc["function"]["name"] for tc in msg_tool_calls])
-
-            messages.append({"role": "assistant", "content": content_str, "tool_calls": msg_tool_calls})
+                messages.append({"role": "assistant", "content": content_str, "tool_calls": msg_tool_calls})
 
             tool_results = []
             for tc in msg_tool_calls:
@@ -743,8 +981,44 @@ async def run_agent_loop_stream(
                         trace_id or "(none)", iteration + 1, name, list(args.keys()),
                     )
                     continue
-                seen_calls.add(call_key)
                 tool_calls_log.append({"name": name, "arguments": args})
+
+                # Validate and auto-resolve projectId for publish tools
+                if name in ("publish-workbook", "publish-datasource", "publish-flow"):
+                    pid = args.get("projectId") or ""
+                    project_name_hint = ""
+                    needs_resolve = False
+                    if not pid:
+                        needs_resolve = True
+                    elif not _is_valid_luid(str(pid)):
+                        # LLM passed a project name instead of LUID — use it as the search hint
+                        project_name_hint = str(pid)
+                        needs_resolve = True
+                    if needs_resolve:
+                        # Auto-resolve: call list-projects to find the projectId
+                        cfg = tool_server_map.get("list-projects") or tool_server_map.get(name) or server_configs[0]
+                        sid = cfg.get("id", cfg.get("url", ""))
+                        search_name = project_name_hint or ""
+                        # Also check the user question for project name hints
+                        if not search_name:
+                            for kw in ("to the ", "to '", 'to "', "project "):
+                                idx = question.lower().find(kw)
+                                if idx >= 0:
+                                    candidate = question[idx + len(kw):].strip().strip("'\"").split(" project")[0].split(" on ")[0].strip()
+                                    if candidate and len(candidate) < 80:
+                                        search_name = candidate
+                                        break
+                        yield "thought", f"  Auto-resolving project: {search_name or '(listing all)'}"
+                        resolved_id = await _auto_resolve_project(pool, sid, search_name, tool_calls_log, logger, trace_id, iteration)
+                        if resolved_id:
+                            yield "thought", f"  Resolved projectId: {resolved_id}"
+                            args["projectId"] = str(resolved_id)
+                        else:
+                            result = f'Error: Could not resolve project "{search_name or pid}" to a valid ID.'
+                            tool_results.append((name, result))
+                            if trace:
+                                trace.add_tool_call(name, args, result, was_redundant=False)
+                            continue
 
                 if name in WRITE_TOOLS and not write_confirmation:
                     confirm_args = dict(args)
@@ -788,6 +1062,24 @@ async def run_agent_loop_stream(
                                     if isinstance(rows, list) and rows:
                                         py_data = {"rows": rows}
                     result = run_execute_python(args.get("code", ""), py_data)
+                    # Flag Log deterministic write: auto-call update-datasource-data
+                    formatted = _format_python_result(result)
+                    flags_data = parse_flags_json(formatted)
+                    if flags_data and flags_data.get("datasourceId"):
+                        fl_ds_id = flags_data["datasourceId"]
+                        fl_args = {"datasourceId": fl_ds_id, "records": flags_data.get("flag_records", [])}
+                        if flags_data.get("resolved_flag_ids"):
+                            fl_args["resolved_flag_ids"] = flags_data["resolved_flag_ids"]
+                        fl_cfg = tool_server_map.get("update-datasource-data") or server_configs[0]
+                        fl_sid = fl_cfg.get("id", fl_cfg.get("url", ""))
+                        yield "thought", "Using tool: update-datasource-data (Flag Log auto-write)"
+                        try:
+                            fl_result = await pool["call_tool"](fl_sid, "update-datasource-data", fl_args)
+                        except Exception:
+                            logger.exception("Flag Log auto-write failed")
+                            fl_result = "Error: Flag Log update-datasource-data failed."
+                        yield "thought", f"  → update-datasource-data: {_tool_result_summary('update-datasource-data', fl_result)}"
+                        tool_calls_log.append({"name": "update-datasource-data", "arguments": fl_args})
                 else:
                     cfg = tool_server_map.get(name) or server_configs[0]
                     sid = cfg.get("id", cfg.get("url", ""))
@@ -797,6 +1089,8 @@ async def run_agent_loop_stream(
                         logger.exception("Tool %s failed", name)
                         result = "Error: MCP server connection failed. Please try again."
                 tool_results.append((name, result))
+                if not (str(result) or "").strip().startswith("Error:"):
+                    seen_calls.add(call_key)
                 if trace:
                     trace.add_tool_call(name, args, str(result), was_redundant=False)
                 logger.info(

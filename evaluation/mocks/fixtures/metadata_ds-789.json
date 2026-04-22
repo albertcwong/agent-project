@@ -1,0 +1,7 @@
+{
+  "columns": [
+    {"caption": "Product ID", "dataType": "string", "role": "dimension"},
+    {"caption": "Warehouse", "dataType": "string", "role": "dimension"},
+    {"caption": "Inventory", "dataType": "integer", "role": "measure"}
+  ]
+}

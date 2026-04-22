@@ -18,6 +18,8 @@ for t in MOCK_TOOL_SCHEMAS:
         t["inputSchema"]["properties"] = {"datasourceId": {"type": "string"}, "query": {"type": "object"}}
     elif t["name"] == "search-content":
         t["inputSchema"]["properties"] = {"query": {"type": "string"}}
+    elif t["name"] == "update-datasource-data":
+        t["inputSchema"]["properties"] = {"datasourceId": {"type": "string"}, "contentBase64": {"type": "string"}}
 
 
 class MockMCPPool:
@@ -53,16 +55,30 @@ class MockMCPPool:
     async def call_tool(self, server_id: str, tool_name: str, args: dict) -> str:
         self.call_log.append({"tool": tool_name, "args": args})
 
+        if self.scenario == "auth_error_graceful" and len(self.call_log) == 1:
+            return "Error: 401 Unauthorized. Authentication expired. Please sign in again."
+
         if tool_name == "list-datasources":
             datasources = [
                 {"id": "ds-123", "name": "Sales Analytics", "type": "datasource"},
                 {"id": "ds-456", "name": "HR Metrics", "type": "datasource"},
                 {"id": "ds-empty", "name": "Empty", "type": "datasource"},
+                {"id": "ds-flag-log", "name": "Flag Log", "type": "datasource"},
             ]
+            if self.scenario == "wrong_datasource_employee":
+                datasources = [{"id": "ds-123", "name": "Sales Analytics", "type": "datasource"}]
             if self.scenario == "ambiguous_datasource":
                 datasources.extend([
                     {"id": "ds-789", "name": "Sales Summary", "type": "datasource"},
                     {"id": "ds-101", "name": "Sales by Region", "type": "datasource"},
+                ])
+            if self.scenario == "cross_datasource":
+                datasources.extend([
+                    {"id": "ds-regional", "name": "Regional Performance", "type": "datasource"},
+                ])
+            if self.scenario == "inspect_compare_schemas":
+                datasources.extend([
+                    {"id": "ds-789", "name": "Inventory", "type": "datasource"},
                 ])
             result = json.dumps({"datasources": datasources})
             for ds in datasources:
@@ -70,8 +86,17 @@ class MockMCPPool:
             return result
         if tool_name == "search-content":
             datasources = [{"id": "ds-123", "name": "Sales Analytics"}]
-            if self.scenario == "field_not_found_recovery":
+            if self.scenario == "wrong_datasource_employee":
+                pass
+            elif self.scenario == "field_not_found_recovery":
                 datasources.append({"id": "ds-456", "name": "Revenue Metrics", "type": "datasource"})
+            if self.scenario == "cross_datasource":
+                datasources.append({"id": "ds-regional", "name": "Regional Performance", "type": "datasource"})
+            if self.scenario == "inspect_compare_schemas":
+                datasources.extend([
+                    {"id": "ds-456", "name": "HR Metrics", "type": "datasource"},
+                    {"id": "ds-789", "name": "Inventory", "type": "datasource"},
+                ])
             projects = [{"id": "proj-1", "name": "Finance", "parentProjectId": None}]
             workbooks = [{"id": "wb-1", "name": "Sales Analytics", "projectId": "proj-1"}]
             result = json.dumps({"datasources": datasources, "workbooks": workbooks, "projects": projects})
@@ -114,6 +139,23 @@ class MockMCPPool:
             if ds_id == "ds-empty":
                 return json.dumps({"rows": []})
 
+            if self.scenario == "empty_result_antarctica":
+                filters = query.get("filters") or query.get("filter") or []
+                filter_str = json.dumps(filters) if isinstance(filters, (list, dict)) else str(filters)
+                if "antarctica" in filter_str.lower():
+                    return json.dumps({"rows": []})
+
+            if self.scenario == "misspelled_technology":
+                filter_str = json.dumps(query)
+                if "tecnology" in filter_str.lower():
+                    return json.dumps({
+                        "rows": [
+                            {"Category": "Technology", "Sales": 836000},
+                            {"Category": "Furniture", "Sales": 742000},
+                            {"Category": "Office Supplies", "Sales": 719000},
+                        ]
+                    })
+
             if self.scenario == "field_not_found_recovery":
                 query_idx = sum(1 for c in self.call_log if c["tool"] == "query-datasource")
                 if query_idx == 1 and ("revenue" in query_str.lower() or "Revenue" in query_str):
@@ -149,12 +191,36 @@ class MockMCPPool:
         if tool_name in ("download-workbook", "download-datasource", "download-flow"):
             return json.dumps({"id": "obj-1", "filename": "test.twbx", "contentBase64": "base64..."})
         if tool_name.startswith("inspect-"):
+            if tool_name == "inspect-workbook-file":
+                return json.dumps({
+                    "id": "obj-1",
+                    "name": "Sales Analytics",
+                    "sheets": [{"name": "Sheet1"}],
+                    "calculatedFields": [
+                        {"name": "Profit Margin", "formula": "[Profit]/[Sales]"},
+                        {"name": "Discount Rate", "formula": "[Discount]"},
+                    ],
+                })
             return json.dumps({"id": "obj-1", "name": "test", "sheets": []})
         if tool_name.startswith("publish-"):
             return json.dumps({"id": "pub-1", "name": "test", "projectId": "proj-1"})
+        if tool_name == "update-datasource-data":
+            ds_id = args.get("datasourceId") or args.get("datasource_id") or ""
+            if ds_id not in self.discovered_ids:
+                return f'Error: Datasource "{ds_id}" not found. Use list-datasources or search-content first.'
+            return json.dumps({"id": ds_id, "name": "Flag Log", "rowsUpdated": 42})
         if tool_name == "get-workbook":
             return json.dumps({"id": "wb-1", "name": "test"})
         if tool_name == "get-view-data":
+            if self.scenario == "cross_datasource":
+                return json.dumps({
+                    "rows": [
+                        {"Region": "East", "Sales": 680000},
+                        {"Region": "West", "Sales": 725000},
+                        {"Region": "Central", "Sales": 501000},
+                        {"Region": "South", "Sales": 392000},
+                    ]
+                })
             return json.dumps({"rows": [{"Region": "East", "Sales": 100000}]})
 
         return json.dumps({"error": f"No fixture for {tool_name}"})

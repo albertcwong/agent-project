@@ -33,19 +33,14 @@ def evaluate_query(
             agg = must_contain["aggregation"].upper()
             agg_found = False
             for f in fields:
-                if isinstance(f, dict) and (f.get("function") or "").upper() == agg:
+                fn = (f.get("function") or f.get("aggregation") or f.get("aggregateFunction") or "") if isinstance(f, dict) else ""
+                if isinstance(f, dict) and fn.upper() == agg:
                     agg_found = True
                     break
                 if isinstance(f, str) and agg in str(f).upper():
                     agg_found = True
                     break
             if not agg_found:
-                # Also check for measure with aggregation in field def
-                for f in fields:
-                    if isinstance(f, dict) and f.get("aggregation", "").upper() == agg:
-                        agg_found = True
-                        break
-                if not agg_found:
                     results["pass"] = False
                     results["errors"].append(f"Expected aggregation {must_contain['aggregation']} not found")
 

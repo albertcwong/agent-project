@@ -1,0 +1,8 @@
+{
+  "columns": [
+    {"caption": "Employee ID", "dataType": "string", "role": "dimension"},
+    {"caption": "Department", "dataType": "string", "role": "dimension"},
+    {"caption": "Headcount", "dataType": "integer", "role": "measure"},
+    {"caption": "Salary", "dataType": "real", "role": "measure"}
+  ]
+}

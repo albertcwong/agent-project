@@ -50,6 +50,25 @@ class LoopTrace:
             })
             self.total_tool_calls += 1
 
+    def to_dict(self) -> dict:
+        return {
+            "intent": self.intent,
+            "system_prompt_length": self.system_prompt_length,
+            "iterations": self.iterations,
+            "termination_reason": self.termination_reason,
+            "total_tool_calls": self.total_tool_calls,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LoopTrace":
+        t = cls()
+        t.intent = d.get("intent", "")
+        t.system_prompt_length = d.get("system_prompt_length", 0)
+        t.iterations = d.get("iterations", [])
+        t.termination_reason = d.get("termination_reason", "")
+        t.total_tool_calls = d.get("total_tool_calls", 0)
+        return t
+
     def format(self) -> str:
         lines = [
             f"Intent: {self.intent}",

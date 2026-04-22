@@ -41,11 +41,33 @@ try:
 except ImportError:
     tableauhyperapi = None
 
+# Numpy-safe json.dumps for FLAGS_JSON and similar outputs
+import datetime
+_orig_dumps = json.dumps
+def _json_dumps(obj, **kw):
+    def _default(o):
+        if isinstance(o, (datetime.date, datetime.datetime)):
+            return o.isoformat()
+        if np is not None:
+            if isinstance(o, (np.integer, np.int64, np.int32)):
+                return int(o)
+            if isinstance(o, (np.floating, np.float64, np.float32)):
+                return float(o)
+            if isinstance(o, np.bool_):
+                return bool(o)
+            if isinstance(o, np.ndarray):
+                return o.tolist()
+            if hasattr(o, "item"):
+                return o.item()
+        raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+    return _orig_dumps(obj, default=_default, **kw)
+
 def _run():
     raw = sys.stdin.read()
     inp = json.loads(raw)
     code = inp.get("code", "")
     data = inp.get("data") or {}
+    json.dumps = _json_dumps
     globals_ = {
         "data": data,
         "pd": pd,

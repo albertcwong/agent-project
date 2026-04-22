@@ -17,7 +17,7 @@ interface ModeSelectorProps {
 export function ModeSelector({ value, onChange }: ModeSelectorProps) {
   const label = value ? "Tableau" : "Chat";
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-caption hover:text-foreground">
           <Wrench className="h-4 w-4" />

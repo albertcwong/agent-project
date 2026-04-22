@@ -66,14 +66,22 @@ ADDENDUM_DOWNLOAD_INSPECT = """
 """
 
 ADDENDUM_PUBLISH = """
-## Publish
-- Before publishing to a target project by name (e.g. "Finance project"), call `list-projects` or `search-content` with `contentTypes: ['project']` to get the `projectId`. Do not guess or fabricate project IDs.
-- Use `publish-workbook`, `publish-datasource`, or `publish-flow` with `projectId` for the target project. Same location = same projectId as source; different location = target projectId from user.
-- When the user has attached files and asks to publish, call the publish tool with contentBase64: 'ATTACHMENT_0' (first file), 'ATTACHMENT_1' (second file), etc. Do not ask the user to provide the file again.
+## Publish workflow
+
+IMPORTANT: Do NOT ask the user for text confirmation (e.g. "Is this correct?", "Should I proceed?"). The system has a built-in confirmation dialog for publish actions. Just call the tool — the user will be prompted automatically.
+
+### Step 1: Resolve the target project
+- Always call `list-projects` (NOT list-datasources) to find the `projectId` for the target project. Do not guess, fabricate, or reuse project IDs from previous failed attempts.
+- Use `search-content` with `contentTypes: ['project']` only if list-projects is unavailable.
+
+### Step 2: Publish with the attached file
+- The user's attached file is already available. Use `contentBase64: 'ATTACHMENT_0'` for the first file, `'ATTACHMENT_1'` for the second, etc. Do NOT ask the user to provide the file again — it is already attached and ready.
+- Call `publish-workbook`, `publish-datasource`, or `publish-flow` with `projectId` from step 1, `name` from the user, and `contentBase64: 'ATTACHMENT_0'`.
+- Include `projectName` in the publish tool arguments so the confirmation dialog can show it to the user.
+
+### Updating existing datasources
 - When the user asks to update or refresh a datasource (e.g. Flag Log) with attached data, use `update-datasource-data` with datasourceId from list-datasources and contentBase64: 'ATTACHMENT_0' for the first attached file. Requires user confirmation.
-- When Python (execute_python) produces base64-encoded .hyper data (e.g. payload_hyper_base64) and actions for Flag Log, pass them as payloadHyperBase64 and actions to `update-datasource-data`. Requires user confirmation.
-- When you know the project name from context (e.g. from list-projects or search-content), include `projectName` in the publish tool arguments so the confirmation dialog can show it to the user.
-- Publish tools require user confirmation; the system will prompt. After the user confirms, proceed with the publish.
+- Flag Log write from execute_python: when Python prints FLAGS_JSON (flag_records + datasourceId), the system handles the update-datasource-data call deterministically. Do not call update-datasource-data for Flag Log from execute_python output.
 """
 
 ADDENDUM_PROJECT = """

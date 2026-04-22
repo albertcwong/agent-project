@@ -1,0 +1,26 @@
+- id: "analyze_then_publish_recommendation"
+  question: "Analyze which product sub-categories are underperforming and explain how I could create a dashboard to monitor them"
+  category: "cross_workflow"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    answer_must_contain: ["sub-category"]
+    answer_must_not_contain: ["I cannot"]
+    max_iterations: 10
+
+- id: "inspect_compare_datasources"
+  question: "Compare the structure of all datasources I have — which fields do they share and which are unique to each?"
+  category: "cross_workflow"
+  scenario: "inspect_compare_schemas"
+  expected:
+    tools_required_any: [["list-datasources", "search-content"]]
+    tools_required: ["get-datasource-metadata"]
+    answer_must_contain_any: ["field", "column", "shared", "common"]
+    max_iterations: 10
+
+- id: "download_inspect_recommend"
+  question: "Download the Sales Analytics workbook, inspect its structure, and suggest improvements to the calculated fields"
+  category: "cross_workflow"
+  expected:
+    tools_required: ["download-workbook", "inspect-workbook-file"]
+    answer_must_contain_any: ["calculated", "field", "formula"]
+    max_iterations: 10

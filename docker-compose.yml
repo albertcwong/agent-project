@@ -40,7 +40,6 @@ services:
     environment:
       - LLM_PROXY_API_KEY=${LLM_PROXY_API_KEY:-}
       - LLM_PROXY_PROVIDER=${LLM_PROXY_PROVIDER:-openai}
-      - MAX_AGENT_ITERATIONS=${MAX_AGENT_ITERATIONS:-10}
       - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4}
     extra_hosts:
       - "host.docker.internal:host-gateway"

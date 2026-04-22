@@ -143,9 +143,29 @@ export function ChatInput({ onSend, onCancel, onModelChange, agentMode, onAgentM
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const html = e.clipboardData.getData("text/html");
-    if (!html) return;
+    const plain = e.clipboardData.getData("text/plain");
+    // Only convert HTML→markdown when clipboard has rich content (tables, lists, formatting).
+    // Skip if the HTML is just browser chrome (e.g. Next.js dev tools portal) or if plain text is sufficient.
+    if (!html || !html.includes("</") || html.includes("<nextjs-portal") || html.includes("data-nextjs")) {
+      // Let the browser handle the paste normally (plain text)
+      return;
+    }
     e.preventDefault();
     const md = turndown.turndown(html);
+    // If turndown produced something much longer than the plain text (junk HTML),
+    // fall back to plain text
+    if (plain && md.length > plain.length * 3 && md.length > 200) {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      setInput(input.slice(0, start) + plain + input.slice(end));
+      requestAnimationFrame(() => {
+        const pos = start + plain.length;
+        ta.setSelectionRange(pos, pos);
+      });
+      return;
+    }
     const ta = textareaRef.current;
     if (!ta) return;
     const start = ta.selectionStart;
@@ -170,7 +190,7 @@ export function ChatInput({ onSend, onCancel, onModelChange, agentMode, onAgentM
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".twbx,.twb,.tdsx,.tflx,.tfl,.hyper,image/*,.txt,.csv,.json,.md,.log"
+        accept=".twbx,.twb,.tdsx,.tflx,.tfl,.hyper,image/*,.txt,.csv,.json,.md,.log,.pdf,.docx"
         className="hidden"
         onChange={handleFileChange}
       />
@@ -210,7 +230,7 @@ export function ChatInput({ onSend, onCancel, onModelChange, agentMode, onAgentM
       </div>
       <div className="flex items-center justify-between gap-2 text-muted-foreground">
         <div className="flex items-center gap-1">
-          <DropdownMenu>
+          <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
               <Button type="button" variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" title="Attachments">
                 <Plus className="h-4 w-4" />

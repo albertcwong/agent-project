@@ -1,0 +1,43 @@
+- id: "find_then_query_by_description"
+  question: "I need sales data from whatever datasource has customer information in it"
+  category: "multi_step"
+  expected:
+    tools_required_any: [["list-datasources", "search-content"]]
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    answer_must_not_contain: ["which datasource", "please specify"]
+    max_iterations: 8
+
+- id: "cross_datasource_comparison"
+  question: "Are the sales figures in the Sales Analytics datasource consistent with what the Regional Performance view shows?"
+  category: "multi_step"
+  scenario: "cross_datasource"
+  expected:
+    tools_required: ["query-datasource"]
+    answer_must_contain: ["sales"]
+    max_iterations: 10
+
+- id: "inspect_then_query"
+  question: "Look at the calculated fields in the Sales Analytics workbook, then use the most relevant one to show profit by category"
+  category: "multi_step"
+  expected:
+    tools_required: ["inspect-workbook-file", "query-datasource"]
+    answer_must_not_contain: ["I cannot"]
+    max_iterations: 10
+
+- id: "iterative_drill_down"
+  question: "Which region has the worst profit margin? Then show me the bottom 5 products in that region by profit."
+  category: "multi_step"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    answer_must_contain: ["profit", "product"]
+    answer_must_not_contain: ["I cannot"]
+    max_iterations: 10
+
+- id: "discover_and_download_filtered"
+  question: "Find all workbooks in the Finance project that were published this year, download the most recently updated one, and tell me what sheets it contains"
+  category: "multi_step"
+  expected:
+    tools_required_any: [["list-workbooks", "search-content"]]
+    tools_required: ["download-workbook", "inspect-workbook-file"]
+    answer_must_not_contain: ["I cannot"]
+    max_iterations: 10

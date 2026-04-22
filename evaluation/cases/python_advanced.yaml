@@ -1,0 +1,52 @@
+- id: "forecast_with_seasonality"
+  question: "Forecast monthly sales for the next 6 months, accounting for seasonal patterns. Show confidence intervals."
+  category: "python_advanced"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource", "execute_python"]
+    answer_must_contain: ["forecast"]
+    answer_must_not_contain: ["truncated", "I cannot", "not possible"]
+    max_iterations: 10
+
+- id: "anomaly_detection_with_context"
+  question: "Identify any anomalous months in profit over the last 3 years and explain what might have caused them based on the data"
+  category: "python_advanced"
+  expected:
+    tools_required: ["query-datasource", "execute_python"]
+    answer_must_contain: ["anomal"]
+    answer_must_not_contain: ["truncated", "I cannot"]
+    max_iterations: 10
+
+- id: "correlation_analysis"
+  question: "Is there a statistically significant correlation between discount rate and profit margin? Run a proper statistical test."
+  category: "python_advanced"
+  expected:
+    tools_required: ["query-datasource", "execute_python"]
+    answer_must_contain_any: ["correlation", "p-value", "significant", "r-squared", "pearson"]
+    answer_must_not_contain: ["I cannot"]
+    max_iterations: 10
+
+- id: "customer_segmentation"
+  question: "Segment customers into groups based on their purchase frequency and average order value using k-means clustering"
+  category: "python_advanced"
+  expected:
+    tools_required: ["query-datasource", "execute_python"]
+    answer_must_contain_any: ["cluster", "segment", "group"]
+    answer_must_not_contain: ["I cannot", "truncated"]
+    max_iterations: 10
+
+- id: "large_dataset_python"
+  question: "Calculate the Pareto distribution of sales — what percentage of customers account for 80% of total sales?"
+  category: "python_advanced"
+  expected:
+    tools_required: ["query-datasource", "execute_python"]
+    answer_must_contain_any: ["pareto", "80%", "percent"]
+    answer_must_not_contain: ["truncated", "I cannot"]
+    max_iterations: 10
+
+- id: "multi_query_python"
+  question: "Compare the sales distribution shape (skewness, kurtosis) across the three product categories"
+  category: "python_advanced"
+  expected:
+    tools_required: ["query-datasource", "execute_python"]
+    answer_must_contain_any: ["skew", "kurtosis", "distribution"]
+    max_iterations: 10

@@ -28,6 +28,7 @@ const TOOL_LABELS: Record<string, string> = {
   "publish-workbook": "Publish workbook",
   "publish-datasource": "Publish datasource",
   "publish-flow": "Publish flow",
+  "update-datasource-data": "Update datasource data",
 };
 
 function parseStepTimings(thought: string, ref: Record<number, { start: number; end?: number }>, now: number): Record<number, { start: number; end?: number }> {
@@ -42,6 +43,8 @@ function parseStepTimings(thought: string, ref: Record<number, { start: number; 
   return out;
 }
 
+const QUESTION_PREVIEW_LEN = 120;
+
 function WriteConfirmDetails({ action, question }: { action: { toolName: string; arguments: Record<string, unknown> }; question?: string }) {
   const { toolName, arguments: args } = action;
   const label = TOOL_LABELS[toolName] ?? toolName;
@@ -53,13 +56,18 @@ function WriteConfirmDetails({ action, question }: { action: { toolName: string;
   const hasNameOrPath = projectPath != null || projectName != null;
   const overwrite = args.overwrite as boolean | undefined;
   const append = args.append as boolean | undefined;
+  const records = args.records as unknown[] | undefined;
+  const recordCount = Array.isArray(records) ? records.length : 0;
+  const questionPreview = question && question.length > QUESTION_PREVIEW_LEN
+    ? question.slice(0, QUESTION_PREVIEW_LEN) + "..."
+    : question;
 
   return (
     <div className="text-body mb-4 space-y-2 text-muted-foreground">
-      {question && (
-        <p className="text-sm">
+      {questionPreview && (
+        <p className="text-sm line-clamp-2">
           <span className="font-medium text-foreground">Your request: </span>
-          {question}
+          {questionPreview}
         </p>
       )}
       <p className="font-medium text-foreground">{label}</p>
@@ -94,6 +102,12 @@ function WriteConfirmDetails({ action, question }: { action: { toolName: string;
           <div>
             <dt className="inline font-medium text-foreground">Append: </dt>
             <dd className="inline">Yes — data will be appended to extract</dd>
+          </div>
+        )}
+        {toolName === "update-datasource-data" && recordCount > 0 && (
+          <div>
+            <dt className="inline font-medium text-foreground">Records: </dt>
+            <dd className="inline">{recordCount} flag record(s) to write</dd>
           </div>
         )}
       </dl>
@@ -149,6 +163,8 @@ function ChatPageContent() {
 
   const [sending, setSending] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Attachments persist across turns until consumed by a successful publish/write tool call
+  const pendingAttachmentsRef = useRef<{ filename: string; contentBase64: string }[]>([]);
 
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
   const [streamingThought, setStreamingThought] = useState<string | null>(null);
@@ -162,6 +178,15 @@ function ChatPageContent() {
     provider: string;
     attachments?: { filename: string; contentBase64: string }[];
   } | null>(null);
+
+  useEffect(() => {
+    if (!pendingConfirmation) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPendingConfirmation(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pendingConfirmation]);
 
   const handleSend = useCallback(async (
     content: string,
@@ -188,6 +213,11 @@ function ChatPageContent() {
           .filter((m) => m.role === "user" || m.role === "assistant")
           .map((m) => ({ role: m.role, content: m.content }));
         const writeConf = getWriteConfirmationScope();
+        // Store new attachments; merge with any pending from previous turns
+        if (attachments?.length) {
+          pendingAttachmentsRef.current = attachments;
+        }
+        const effectiveAttachments = pendingAttachmentsRef.current.length ? pendingAttachmentsRef.current : undefined;
         const body = {
           question: content,
           model,
@@ -196,7 +226,7 @@ function ChatPageContent() {
           tokens: getMcpTokens(),
           history,
           ...(writeConf && { writeConfirmation: writeConf }),
-          ...(attachments?.length && { attachments }),
+          ...(effectiveAttachments && { attachments: effectiveAttachments }),
           ...(thread.conversationState && { conversationState: thread.conversationState }),
         };
         const controller = new AbortController();
@@ -248,7 +278,7 @@ function ChatPageContent() {
                     else if (obj.type === "text") textAcc += obj.content ?? "";
                     else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
                     else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
-                    else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider, attachments };
+                    else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider, attachments: effectiveAttachments };
                     else if (obj.type === "done") {
                       if (obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
                       if (obj.meta?.conversationState) conversationState = obj.meta.conversationState;
@@ -266,7 +296,7 @@ function ChatPageContent() {
                   else if (obj.type === "text") textAcc += obj.content ?? "";
                   else if (obj.type === "app" && obj.app) appAcc.push(obj.app);
                   else if (obj.type === "download" && obj.download) downloadAcc.push(obj.download);
-                  else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider, attachments };
+                  else if (obj.type === "confirm" && obj.action) confirmData = { action: obj.action, correlationId: obj.correlationId ?? "", question: content, model, provider, attachments: effectiveAttachments };
                   else if (obj.type === "done") {
                     if (obj.meta?.tool_calls) toolCallsAcc = (obj.meta.tool_calls as { name: string }[]).map((t) => t.name);
                     if (obj.meta?.conversationState) conversationState = obj.meta.conversationState;
@@ -281,6 +311,11 @@ function ChatPageContent() {
           if (confirmData) {
             setPendingConfirmation(confirmData);
             return;
+          }
+          // Clear pending attachments once a write tool has completed (publish succeeded or failed — either way the attachments were consumed)
+          const writeTools = ["publish-workbook", "publish-datasource", "publish-flow", "update-datasource-data"];
+          if (toolCallsAcc.some((t) => writeTools.includes(t))) {
+            pendingAttachmentsRef.current = [];
           }
           if (conversationState != null) updateConversationState(thread.id, conversationState);
           const finalContent = textAcc.trim() || (thoughtAcc.trim() ? thoughtAcc.trim() : null) || (appAcc.length ? "Results:" : null) || (downloadAcc.length ? "Downloaded files:" : null);
@@ -464,6 +499,8 @@ function ChatPageContent() {
         }
       }
       if (confirmConversationState != null) updateConversationState(activeThread.id, confirmConversationState);
+      // Clear pending attachments after confirmed write completes
+      pendingAttachmentsRef.current = [];
       const content = textAcc.trim() || (thoughtAcc.trim() ? thoughtAcc.trim() : null) || (appAcc.length ? "Results:" : null) || (downloadAcc.length ? "Downloaded files:" : null);
       if (content) {
         const steps = [...thoughtAcc.matchAll(/Step (\d+):/g)].map((m) => parseInt(m[1], 10));
@@ -511,11 +548,22 @@ function ChatPageContent() {
   return (
     <div className="flex h-screen flex-col">
       {pendingConfirmation && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="mx-4 max-w-md rounded-lg border bg-background p-6 shadow-lg">
-            <h3 className="text-heading mb-2">Confirm write operation</h3>
-            <WriteConfirmDetails action={pendingConfirmation.action} question={pendingConfirmation.question} />
-            <div className="flex gap-2">
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setPendingConfirmation(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm write operation"
+        >
+          <div
+            className="flex max-h-[85vh] max-w-md flex-col rounded-lg border bg-background shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="overflow-y-auto p-6">
+              <h3 className="text-heading mb-2">Confirm write operation</h3>
+              <WriteConfirmDetails action={pendingConfirmation.action} question={pendingConfirmation.question} />
+            </div>
+            <div className="flex shrink-0 gap-2 border-t bg-background p-4">
               <button
                 type="button"
                 onClick={() => handleConfirmWrite("once")}

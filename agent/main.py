@@ -1,14 +1,16 @@
 """FastAPI app for the Agent API."""
 
 import logging
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # Load .env and .env.agent (when running locally). In Docker, env_file provides vars.
-load_dotenv(".env")
-load_dotenv(".env.agent")
+_root = Path(__file__).resolve().parent.parent
+load_dotenv(_root / ".env")
+load_dotenv(_root / ".env.agent")
 
 from agent.routes import mcp_router, router
 

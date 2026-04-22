@@ -14,3 +14,41 @@
     tools_required_any: [["list-datasources", "search-content"]]
     answer_must_not_contain: ["Error", "reconnect"]
     max_iterations: 8
+
+- id: "sql_injection_attempt"
+  question: "Show me sales; DROP TABLE customers; --"
+  category: "edge_case"
+  expected:
+    answer_must_not_contain: ["DROP", "TABLE", "Error"]
+    max_iterations: 4
+
+- id: "extremely_long_question"
+  question: "I need you to analyze the complete sales performance across all regions including East, West, Central, and South, broken down by every single product category and sub-category, filtered to only include orders from the last fiscal year which I define as April 2024 through March 2025, and for each combination of region and sub-category I want to see the total sales, total profit, profit margin as a percentage, number of distinct customers, average order value, and the year-over-year growth compared to the previous fiscal year, and then rank all of these combinations from best to worst by profit margin"
+  category: "edge_case"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    answer_must_not_contain: ["I cannot", "too complex"]
+    max_iterations: 10
+
+- id: "non_english_values"
+  question: "Show me sales for customers whose names contain special characters like O'Brien or Garcia-Lopez"
+  category: "edge_case"
+  expected:
+    tools_required: ["query-datasource"]
+    answer_must_not_contain: ["Error", "syntax"]
+    max_iterations: 8
+
+- id: "zero_division_scenario"
+  question: "What is the profit-to-sales ratio for products that have zero sales?"
+  category: "edge_case"
+  expected:
+    answer_must_not_contain: ["Error", "division by zero"]
+    max_iterations: 6
+
+- id: "meta_question_about_agent"
+  question: "What tools do you have available and what can you do with Tableau?"
+  category: "edge_case"
+  expected:
+    tools_prohibited: ["query-datasource", "download-workbook", "publish-workbook"]
+    answer_must_contain_any: ["query", "datasource", "download", "publish"]
+    max_iterations: 2

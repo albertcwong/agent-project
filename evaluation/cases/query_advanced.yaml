@@ -1,8 +1,62 @@
 - id: "forecast_sales"
   question: "Forecast next quarter's sales based on historical data"
-  category: "query"
+  category: "query_advanced"
   expected:
     tools_required: ["get-datasource-metadata", "query-datasource", "execute_python"]
     answer_must_contain_any: ["forecast", "predict", "trend", "projection"]
     answer_must_not_contain: ["I cannot", "not possible"]
+    max_iterations: 10
+
+- id: "multi_measure_comparison"
+  question: "Compare average profit margin and average discount rate by product category, but only for categories where total sales exceed $100,000"
+  category: "query_advanced"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    query_must_contain:
+      aggregation: "AVG"
+    answer_must_not_contain: ["I cannot", "not possible"]
+    max_iterations: 8
+
+- id: "year_over_year_growth"
+  question: "What is the year-over-year sales growth rate by region for the last 3 years?"
+  category: "query_advanced"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource", "execute_python"]
+    answer_must_contain: ["growth", "region"]
+    answer_must_not_contain: ["I cannot", "not possible", "truncated"]
+    max_iterations: 10
+
+- id: "percentile_analysis"
+  question: "Show me the 90th percentile of order value by customer segment"
+  category: "query_advanced"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource", "execute_python"]
+    answer_must_contain: ["percentile", "segment"]
+    max_iterations: 10
+
+- id: "conditional_aggregation"
+  question: "What percentage of our customers have placed more than 5 orders and what is their average order value compared to customers with 5 or fewer orders?"
+  category: "query_advanced"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource", "execute_python"]
+    answer_must_contain: ["customer", "order"]
+    answer_must_not_contain: ["I cannot"]
+    max_iterations: 10
+
+- id: "moving_average"
+  question: "Calculate a 3-month moving average of sales and identify months where actual sales deviated more than 20% from the moving average"
+  category: "query_advanced"
+  expected:
+    tools_required: ["query-datasource", "execute_python"]
+    answer_must_contain: ["moving average"]
+    answer_must_not_contain: ["truncated", "I cannot"]
+    max_iterations: 10
+
+- id: "cohort_retention"
+  question: "Group customers by their first purchase quarter and show what percentage made a repeat purchase within the following quarter"
+  category: "query_advanced"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource", "execute_python"]
+    answer_must_contain: ["cohort", "retention"]
+    answer_must_not_contain: ["I cannot"]
     max_iterations: 10

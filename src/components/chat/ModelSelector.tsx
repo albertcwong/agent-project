@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { MODELS_RELOAD_EVENT } from "@/components/settings/ModelReload";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,6 +35,7 @@ export function ModelSelector({ value, onChange }: ModelSelectorProps) {
   const [modelsByProvider, setModelsByProvider] = useState<
     Record<string, { id: string }[]>
   >({});
+  const [collapsedProviders, setCollapsedProviders] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -81,6 +82,15 @@ export function ModelSelector({ value, onChange }: ModelSelectorProps) {
     return () => window.removeEventListener(MODELS_RELOAD_EVENT, handler);
   }, [fetchModels]);
 
+  const toggleProvider = (provider: string) => {
+    setCollapsedProviders((prev) => {
+      const next = new Set(prev);
+      if (next.has(provider)) next.delete(provider);
+      else next.add(provider);
+      return next;
+    });
+  };
+
   const handleSelect = (modelId: string, provider: string) => {
     onChange(modelId, provider);
     if (typeof window !== "undefined") {
@@ -94,7 +104,7 @@ export function ModelSelector({ value, onChange }: ModelSelectorProps) {
     : "Select model";
 
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="sm" disabled={loading} className="h-8 gap-1.5 text-caption hover:text-foreground">
           {loading ? "Loading..." : displayLabel}
@@ -105,17 +115,26 @@ export function ModelSelector({ value, onChange }: ModelSelectorProps) {
         {Object.entries(modelsByProvider).map(([provider, models]) =>
           models.length > 0 ? (
             <div key={provider}>
-              <DropdownMenuLabel>
+              <DropdownMenuLabel
+                className="flex cursor-pointer items-center gap-1 select-none"
+                onClick={() => toggleProvider(provider)}
+              >
+                {collapsedProviders.has(provider) ? (
+                  <ChevronRight className="h-3 w-3" />
+                ) : (
+                  <ChevronDown className="h-3 w-3" />
+                )}
                 {PROVIDER_LABELS[provider] || provider}
               </DropdownMenuLabel>
-              {models.map((m) => (
-                <DropdownMenuItem
-                  key={`${provider}-${m.id}`}
-                  onClick={() => handleSelect(m.id, provider)}
-                >
-                  {m.id}
-                </DropdownMenuItem>
-              ))}
+              {!collapsedProviders.has(provider) &&
+                models.map((m) => (
+                  <DropdownMenuItem
+                    key={`${provider}-${m.id}`}
+                    onClick={() => handleSelect(m.id, provider)}
+                  >
+                    {m.id}
+                  </DropdownMenuItem>
+                ))}
             </div>
           ) : null
         )}

@@ -1,15 +1,19 @@
 import OpenAI from "openai";
+import mammoth from "mammoth";
+import { PDFParse } from "pdf-parse";
 import { NextResponse } from "next/server";
 
 export const maxDuration = 300;
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
 const TEXT_EXT = /\.(txt|csv|json|md|log)$/i;
+const PDF_EXT = /\.pdf$/i;
+const DOCX_EXT = /\.docx$/i;
 
-function buildUserContent(
+async function buildUserContent(
   text: string,
   attachments?: { filename: string; contentBase64: string }[]
-): string | OpenAI.Chat.Completions.ChatCompletionContentPart[] {
+): Promise<string | OpenAI.Chat.Completions.ChatCompletionContentPart[]> {
   if (!attachments?.length) return text;
 
   const parts: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [{ type: "text", text }];
@@ -24,6 +28,24 @@ function buildUserContent(
         parts.push({ type: "text", text: `\n\n[File: ${a.filename}]\n${decoded}` });
       } catch {
         parts.push({ type: "text", text: `\n\n[File: ${a.filename} - could not decode]` });
+      }
+    } else if (PDF_EXT.test(a.filename)) {
+      try {
+        const buffer = Buffer.from(a.contentBase64, "base64");
+        const parser = new PDFParse({ data: buffer });
+        const result = await parser.getText();
+        await parser.destroy();
+        parts.push({ type: "text", text: `\n\n[File: ${a.filename}]\n${result.text}` });
+      } catch (e) {
+        parts.push({ type: "text", text: `\n\n[File: ${a.filename} - could not parse PDF]` });
+      }
+    } else if (DOCX_EXT.test(a.filename)) {
+      try {
+        const buffer = Buffer.from(a.contentBase64, "base64");
+        const { value } = await mammoth.extractRawText({ buffer });
+        parts.push({ type: "text", text: `\n\n[File: ${a.filename}]\n${value}` });
+      } catch {
+        parts.push({ type: "text", text: `\n\n[File: ${a.filename} - could not parse DOCX]` });
       }
     }
   }
@@ -65,7 +87,7 @@ export async function POST(req: Request) {
     const lastUser = filtered.filter((m: { role?: string }) => m.role === "user").pop();
     const processed = filtered.slice(0, -1);
     if (lastUser && lastUser.role === "user") {
-      const content = buildUserContent(lastUser.content || "", attachments);
+      const content = await buildUserContent(lastUser.content || "", attachments);
       processed.push({ role: "user", content });
     } else if (filtered.length) {
       processed.push(...filtered.slice(-1));

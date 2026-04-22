@@ -38,6 +38,7 @@ export function useThreads() {
       title: "New chat",
       messages: [],
       createdAt: Date.now(),
+      conversationState: undefined,
     };
     setThreads((prev) => [thread, ...prev]);
     setActiveId(thread.id);

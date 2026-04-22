@@ -13,7 +13,50 @@
   scenario: "field_not_found_recovery"
   expected:
     tools_required: ["get-datasource-metadata", "query-datasource"]
-    # min_tool_calls: 3  # Recovery path; agent may get it right on first try from metadata
     answer_must_not_contain: ["Error", "field not found"]
     answer_must_contain_any: ["category", "sales", "amount", "revenue"]
     max_iterations: 10
+
+- id: "wrong_datasource_first"
+  question: "Show me employee headcount by department"
+  category: "error_recovery"
+  scenario: "wrong_datasource_employee"
+  expected:
+    tools_required: ["get-datasource-metadata"]
+    answer_must_not_contain: ["reconnect"]
+    answer_must_contain_any: ["not available", "no field", "does not contain", "employee"]
+    max_iterations: 8
+
+- id: "query_timeout_recovery"
+  question: "Show me all individual transactions for the last 5 years with full detail"
+  category: "error_recovery"
+  expected:
+    tools_required: ["get-datasource-metadata"]
+    max_iterations: 8
+
+- id: "multiple_field_mismatches"
+  question: "Show me the net revenue after returns by product line and sales territory"
+  category: "error_recovery"
+  expected:
+    tools_required: ["get-datasource-metadata"]
+    answer_must_not_contain: ["reconnect"]
+    max_iterations: 10
+
+- id: "empty_result_interpretation"
+  question: "Show me all orders from the Antarctica region"
+  category: "error_recovery"
+  scenario: "empty_result_antarctica"
+  expected:
+    tools_required: ["query-datasource"]
+    answer_must_contain_any: ["no data", "no results", "no orders", "zero", "empty", "does not exist"]
+    answer_must_not_contain: ["Error", "reconnect"]
+    max_iterations: 6
+
+- id: "auth_error_graceful"
+  question: "Show me sales by region"
+  category: "error_recovery"
+  scenario: "auth_error_graceful"
+  expected:
+    answer_must_contain_any: ["authentication", "sign in", "reconnect", "expired"]
+    answer_must_not_contain: ["sales by region"]
+    max_iterations: 4

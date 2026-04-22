@@ -1,0 +1,102 @@
+- id: "follow_up_breakdown"
+  question: "Break that down by quarter"
+  history:
+    - role: "user"
+      content: "Show me total sales by region"
+    - role: "assistant"
+      content: "Here are total sales by region: East $100k, West $150k, North $80k."
+  conversation_state:
+    currentDatasourceId: "ds-123"
+    lastQuery:
+      fields: [{"fieldCaption": "Region"}]
+      aggregation: "SUM"
+  expected:
+    tools_prohibited: ["list-datasources"]
+    query_must_contain:
+      fields: ["Quarter"]
+    max_iterations: 5
+
+- id: "five_turn_progressive_analysis"
+  question: "Now correlate those anomalies with the discount patterns we found earlier"
+  history:
+    - role: "user"
+      content: "Show me monthly profit trends for the last 2 years"
+    - role: "assistant"
+      content: "Here are monthly profit trends. There are notable dips in March 2024 and September 2024."
+    - role: "user"
+      content: "What were the discount rates during those months?"
+    - role: "assistant"
+      content: "March 2024 had an average discount of 25%, September 2024 had 30%. Normal months average 15%."
+    - role: "user"
+      content: "Flag any months where discount was more than 2 standard deviations above the mean"
+    - role: "assistant"
+      content: "Anomalous discount months: March 2024 (25%, z=2.3), September 2024 (30%, z=3.1), December 2023 (22%, z=1.9, borderline)."
+  conversation_state:
+    currentDatasourceId: "ds-123"
+    lastQuery:
+      fields:
+        - {"fieldCaption": "Order Date"}
+        - {"fieldCaption": "Discount", "function": "AVG"}
+    establishedFilters: {}
+  expected:
+    tools_prohibited: ["list-datasources"]
+    tools_required: ["execute_python"]
+    answer_must_contain_any: ["correlat", "discount", "profit"]
+    answer_must_not_contain: ["which datasource", "what do you mean"]
+    max_iterations: 8
+
+- id: "context_switch_and_return"
+  question: "Actually, go back to the sales analysis. What was the total for the East region?"
+  history:
+    - role: "user"
+      content: "Show me total sales by region"
+    - role: "assistant"
+      content: "Total sales by region: East $680k, West $725k, Central $501k, South $392k."
+    - role: "user"
+      content: "Now show me all the projects on the server"
+    - role: "assistant"
+      content: "Found 5 projects: Finance, Marketing, Sales, Operations, Executive."
+  conversation_state:
+    currentDatasourceId: "ds-123"
+    lastQuery:
+      fields:
+        - {"fieldCaption": "Region"}
+        - {"fieldCaption": "Sales", "function": "SUM"}
+  expected:
+    answer_must_contain: ["680", "east"]
+    max_iterations: 4
+
+- id: "contradiction_handling"
+  question: "Show me sales by region but exclude all regions"
+  category: "edge_case"
+  expected:
+    answer_must_not_contain: ["Error", "reconnect"]
+    tools_prohibited: ["query-datasource"]
+    max_iterations: 4
+
+- id: "rapid_topic_changes"
+  question: "What projects do we have?"
+  category: "edge_case"
+  expected:
+    tools_required_any: [["list-projects", "search-content"]]
+    max_iterations: 4
+
+- id: "rapid_topic_change_followup"
+  question: "Forget all that. What is the average shipping time by ship mode?"
+  history:
+    - role: "user"
+      content: "What projects do we have?"
+    - role: "assistant"
+      content: "Found 5 projects: Finance, Marketing, Sales, Operations, Executive."
+    - role: "user"
+      content: "How many workbooks are in Finance?"
+    - role: "assistant"
+      content: "The Finance project contains 3 workbooks: Budget Report, P&L Dashboard, Cash Flow Analysis."
+  conversation_state:
+    targetProjectId: "proj-finance"
+    targetProjectName: "Finance"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    answer_must_contain: ["ship"]
+    answer_must_not_contain: ["Finance", "project", "workbook"]
+    max_iterations: 8

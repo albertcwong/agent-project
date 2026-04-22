@@ -29,6 +29,7 @@ REQUIRED_TOOLS = {
     "publish-flow",
     "list-projects",
     "list-flows",
+    "update-datasource-data",
 }
 
 # Tools that return file content; agent streams as download chunk
@@ -39,6 +40,7 @@ WRITE_TOOLS = {
     "publish-workbook",
     "publish-datasource",
     "publish-flow",
+    "update-datasource-data",
 }
 
 # Built-in Python execution (not from MCP)

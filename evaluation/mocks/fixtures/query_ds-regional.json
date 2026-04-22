@@ -1,0 +1,8 @@
+{
+  "rows": [
+    {"Region": "East", "Sales": 680000, "Profit": 85000, "Quarter": "Q4"},
+    {"Region": "West", "Sales": 725000, "Profit": 92000, "Quarter": "Q4"},
+    {"Region": "Central", "Sales": 501000, "Profit": 62000, "Quarter": "Q4"},
+    {"Region": "South", "Sales": 392000, "Profit": 48000, "Quarter": "Q4"}
+  ]
+}

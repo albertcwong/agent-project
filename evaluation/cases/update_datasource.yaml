@@ -1,0 +1,10 @@
+- id: "update_datasource_data"
+  question: "Update the Flag Log datasource with the attached data"
+  category: "write"
+  attachments:
+    - filename: "flag_log_data.hyper"
+      contentBase64: "UEsDBBQAAAAIAAEA"
+  expected:
+    tools_required_any: [["list-datasources", "search-content"]]
+    tools_required: ["update-datasource-data"]
+    max_iterations: 6

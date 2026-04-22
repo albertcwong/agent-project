@@ -96,10 +96,14 @@ async def _stream_agent(req: AskRequest):
         write_conf = req.writeConfirmation.model_dump() if req.writeConfirmation else None
         confirmed = req.confirmedAction.model_dump() if req.confirmedAction else None
         attachments = [{"filename": a.filename, "contentBase64": a.contentBase64} for a in req.attachments]
+        logger.info("Agent ask: attachments=%d sizes=%s confirmed=%s",
+                     len(attachments),
+                     [len(a["contentBase64"]) for a in attachments],
+                     bool(confirmed))
         conv_state = req.conversationState.model_dump() if req.conversationState else None
         async for kind, data in run_agent_loop_stream(
             question=req.question,
-            system_prompt=get_system_prompt(req.question),
+            system_prompt=get_system_prompt(req.question, history),
             server_configs=server_configs,
             provider=req.provider,
             model=req.model,
@@ -156,7 +160,7 @@ async def ask_sync(req: AskRequest):
     try:
         answer, sources, tool_calls, awaiting, out_state, _ = await run_agent_loop(
             question=req.question,
-            system_prompt=get_system_prompt(req.question),
+            system_prompt=get_system_prompt(req.question, history),
             server_configs=server_configs,
             provider=req.provider,
             model=req.model,

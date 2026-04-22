@@ -1,0 +1,59 @@
+- id: "vague_metric"
+  question: "How is the business doing?"
+  category: "ambiguity"
+  expected:
+    tools_required_any: [["list-datasources", "search-content"]]
+    answer_must_not_contain: ["I cannot", "reconnect", "Error"]
+    max_iterations: 8
+
+- id: "ambiguous_field_name"
+  question: "Show me revenue by state"
+  category: "ambiguity"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    answer_must_not_contain: ["field not found", "I cannot"]
+    max_iterations: 8
+
+- id: "implicit_time_range"
+  question: "How did we do last quarter?"
+  category: "ambiguity"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    answer_must_not_contain: ["which quarter", "what time period", "I cannot"]
+    max_iterations: 8
+
+- id: "pronoun_resolution_complex"
+  question: "Show me sales by category"
+  category: "ambiguity"
+  expected:
+    tools_required: ["query-datasource"]
+    max_iterations: 6
+
+- id: "pronoun_resolution_followup"
+  question: "Now remove the worst performing one and show me the rest as a percentage of total"
+  history:
+    - role: "user"
+      content: "Show me sales by category"
+    - role: "assistant"
+      content: "Here are sales by category: Technology $836k, Furniture $742k, Office Supplies $719k."
+  conversation_state:
+    currentDatasourceId: "ds-123"
+    lastQuery:
+      fields:
+        - {"fieldCaption": "Category"}
+        - {"fieldCaption": "Sales", "function": "SUM"}
+  expected:
+    tools_prohibited: ["list-datasources"]
+    tools_required: ["query-datasource"]
+    answer_must_contain: ["percentage", "total"]
+    answer_must_not_contain: ["which one", "what do you mean"]
+    max_iterations: 8
+
+- id: "misspelled_entity"
+  question: "Show me sales for the Tecnology category"
+  category: "ambiguity"
+  scenario: "misspelled_technology"
+  expected:
+    tools_required: ["get-datasource-metadata", "query-datasource"]
+    answer_must_not_contain: ["not found", "I cannot"]
+    max_iterations: 8
